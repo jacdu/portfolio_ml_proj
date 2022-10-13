@@ -1,0 +1,308 @@
+---
+title: "Untitled"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message=FALSE)
+library(tidyverse)
+library(dplyr)
+```
+
+```{r}
+warnings <- read_csv('warnings.csv')
+rdu <- read_csv('weather_station_data_20220915/rdu_station_data.csv')
+# eco <- read_csv('weather_station_data_20220915/econet_weather_station_data.csv')
+# roxboro
+# tdf <- read_csv('weather_station_data_20220915/tdf_station_data.csv') 
+```
+
+```{r date-process}
+# get year, month, day from date 
+rdut <- rdu
+rdut$date <- lubridate::mdy(rdut$date)
+
+rdut %>%
+  mutate(year = factor(lubridate::year(date)),
+         month = factor(lubridate::month(date)), 
+         day = factor(lubridate::day(date))) %>%
+  mutate(round_time = as_hms(format(lubridate::round_date(as.POSIXct(time), unit='hour'), format = "%H:%M:%S")))-> rdut
+
+# MAKES RDUT DF
+```
+
+```{r}
+# add extreme heat condition var 
+warnings %>%
+  filter(ph_name %in% c('Excessive Heat', 'Heat' )) %>%
+  select(issued, expired, name) %>%
+  mutate(issued = lubridate::round_date(issued, unit = "hour"),
+         expired = lubridate::round_date(expired, unit = "hour"),
+         diff = as.integer(expired - issued))  -> warnings_c
+
+
+# where it's negative switch issued and expired 
+warnings_c %>%
+  filter(diff < 0 ) %>%
+  rename(expired = issued, issued = expired) %>%
+  mutate(diff = as.integer(expired - issued)) -> warnings_neg
+
+# join 
+warnings_fix <- rbind(warnings_c[warnings_c$diff >= 0,], warnings_neg)
+
+# get day month year hour 
+warnings_dates <- data.frame()
+
+for (i in 1:nrow(warnings_fix)){
+  x <- warnings_fix[i,]
+  num <- x$diff
+  num1 <- num + 1
+  date_i <- rep(x$issued + 3600 * 0:num)
+  warnings_i <- rep(x$name, num1)
+
+  df_i <- data.frame(date_i, warnings_i)
+  names(df_i) <- c('date', 'name')
+
+  warnings_dates <- rbind(warnings_dates, df_i)
+}
+
+# check warnings dates row num 
+# sum(warnings_fix$diff) + 36
+
+# make is heat bool var
+warnings_dates %>% 
+  mutate(is_heat = TRUE, 
+         time = as_hms(format(as.POSIXct(date), format = "%H:%M:%S")), 
+         date = lubridate::date(date)) -> warnings_dates
+```
+
+
+```{r}
+# join warnings and rdu data 
+left_join(rdut, warnings_dates, by=c('date', 'round_time'='time')) -> rduw
+```
+
+summary stats 
+
+density by factor 
+```{r}
+# there are no extreme danger points 
+rdut %>% 
+  count(eh)
+
+# histogram by each variable overall 
+rdut %>%
+  select(wbgt:hi, year, month, day)%>%
+  pivot_longer(cols=wbgt:hi, names_to='type', values_to = 'value') %>%
+  ggplot(aes(x = value)) +
+  geom_density() +
+  facet_wrap(~type, nrow=4, scales='free')+ 
+  theme_bw()
+  
+```
+
+density by month for summer
+```{r}
+rdut %>%
+  select(wbgt:hi, year, month, day) %>%
+  filter(month %in% c(5,6,7,8,9)) %>%
+  pivot_longer(cols=wbgt:hi, names_to='type', values_to = 'value') %>%
+  ggplot(aes(x = value, color = month)) +
+  geom_density() +
+  facet_wrap(~type, nrow=4, scales='free') + 
+  theme_bw()
+```
+
+```{r}
+rdut %>%
+  select(wbgt:hi, year, month, day) %>%
+  filter(month %in% c(5,6,7,8,9)) %>%
+  pivot_longer(cols=wbgt:hi, names_to='type', values_to = 'value') %>%
+  ggplot(aes(x = value, fill = month)) +
+  geom_boxplot() +
+  facet_wrap(~type, nrow=4, scales='free') +
+  theme_bw() 
+```
+
+density by year for summer 
+```{r}
+rdut %>%
+  select(wbgt:hi, year, month, day) %>%
+  filter(month %in% c(5,6,7,8,9),
+         year %in% c(2018, 2019, 2020,2021)) %>%
+  pivot_longer(cols=wbgt:hi, names_to='type', values_to = 'value') %>%
+  ggplot(aes(x = value, color = year)) +
+  geom_density() +
+  facet_wrap(~type, nrow=4, scales='free') +
+  theme_bw() 
+```
+```{r}
+rdut %>%
+  select(wbgt:hi, year, month, day) %>%
+  filter(month %in% c(5,6,7,8,9),
+         year %in% c(2018, 2019, 2020,2021)) %>%
+  pivot_longer(cols=wbgt:hi, names_to='type', values_to = 'value') %>%
+  ggplot(aes(x = value, fill = year)) +
+  geom_boxplot() +
+  facet_wrap(~type, nrow=4, scales='free') +
+  theme_bw() 
+```
+
+distribution of factor by time of day for summer months
+```{r fig.width=10, fig.height=8}
+rdut$time2 <- as.character(rdut$time)
+rdut %>%
+  mutate(hour = as.factor(str_sub(time2, 1,2))) %>%
+  select(wbgt:hi, year, month, day, hour) %>%
+  filter(month %in% c(5,6,7,8,9)) %>%
+  pivot_longer(cols=wbgt:hi, names_to='type', values_to = 'value') %>%
+  ggplot(aes(x = value, fill = hour)) +
+  geom_boxplot() +
+  facet_wrap(~type, nrow=4, scales='free') +
+  theme_bw() 
+
+```
+
+```{r}
+# make heat warning boolean variable 
+# rdut %>%
+#   mutate(is_eh = ifelse(eh == 'None', FALSE, TRUE)) -> rdut
+# 
+# rdut %>% 
+#   mutate(is_eh_day = ifelse(date %in% eh_dates$date, TRUE, FALSE)) -> rdut
+
+rduw %>%
+  mutate(is_heat = ifelse(is.na(is_heat), FALSE, is_heat),
+         is_heat_day = ifelse(date %in% unique(rduw$date[rduw$is_heat == TRUE]), TRUE, FALSE)) -> rduw
+
+rduw %>%
+  filter(is_heat_day)
+```
+
+compare heat warning vs not for each factor 
+```{r}
+rduw %>%
+  filter(month %in% c(5,6,7,8,9)) %>%
+  select(wbgt:hi, is_heat) %>%
+  pivot_longer(cols=wbgt:hi, names_to='type', values_to = 'value') %>%
+  ggplot(aes(x = value, color = is_heat)) +
+  geom_density() +
+  facet_wrap(~type, nrow=4, scales='free') +
+  theme_bw() 
+  
+```
+
+```{r}
+rduw %>%
+  filter(month %in% c(5,6,7,8,9)) %>%
+  select(wbgt:hi, is_heat) %>%
+  pivot_longer(cols=wbgt:hi, names_to='type', values_to = 'value') %>%
+  ggplot(aes(x = value, color = is_heat)) +
+  geom_boxplot() +
+  facet_wrap(~type, nrow=4, scales='free') +
+  theme_bw() +
+  labs(color = 'Heat Index Warning')
+```
+
+```{r}
+rduw$day <- factor(rduw$day, levels=c(1:31))
+```
+
+```{r fig.width=10, fig.height=5}
+rduw %>% 
+  filter(month %in% c(5,6,7,8,9)) %>%
+  mutate(hour = as.factor(str_sub(time, 1,2))) %>%
+  mutate(tod = case_when(
+    hour %in% c('22', '23', '00', '01', '02', '03', '04', '05') ~ 'Evening',
+    hour %in% c('06', '07', '08', '09', '10', '11') ~ 'Morning',
+    hour %in% c('12', '13','14','15','16','17') ~ 'Afternoon',
+    hour %in% c('18','19','20','21') ~ 'Early Evening'
+  )) -> rdut_tod
+
+rdut_tod$tod <- factor(rdut_tod$tod, levels = c('Morning', 'Afternoon', 'Early Evening', 'Evening'))
+
+rdut_tod %>%
+  filter(is_heat == TRUE) %>%
+  select(wbgt:hi, year:day, is_heat_day, tod) %>%
+  group_by( month, day, tod) %>%
+  summarise_if(is.numeric, mean) %>%
+  pivot_longer(cols=wbgt:hi, names_to='type', values_to = 'value') %>%
+  ggplot(aes(x = day, y = value, color = tod)) +
+  geom_line(aes(group = 1)) +
+  facet_grid(type~month, scales = 'free') + 
+  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank()) + 
+  labs(color='Time of Day')
+  
+```
+
+```{r fig.width=10, fig.height=5}
+rdut_tod %>%
+  filter(is_heat == FALSE) %>%
+  select(wbgt:hi, year:day, is_heat, tod) %>%
+  group_by( month, day, tod) %>%
+  summarise_if(is.numeric, mean) %>%
+  pivot_longer(cols=wbgt:hi, names_to='type', values_to = 'value') %>%
+  ggplot(aes(x = day, y = value, color = tod)) +
+  geom_line(aes(group = 1)) +
+  facet_grid(type~month, scales = 'free') + 
+  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank()) + 
+  labs(color='Time of Day')
+```
+
+look at lag 
+
+
+```{r}
+rdut %>%
+  distinct(date) -> dates
+
+rdut %>% 
+  filter(is_eh == TRUE) %>%
+  distinct(date) -> eh_dates
+
+
+lag_dates <- dates[rep(which(dates$date %in% eh_dates$date), each =6) + -5:0,]
+
+lag_dates$lag <- rep(c('lag5', 'lag4', 'lag3', 'lag2', 'lag1', 'lag0'), times= 1305)
+
+rdut_lag <- right_join(rdut_tod, lag_dates, by='date')
+```
+
+plotting lag 0 vs lag of each one for each factor for each tod 
+
+
+```{r}
+rdut_lag %>%
+  select(date, ta, lag) %>%
+  pivot_longer(ta, names_to='type', values_to='value') 
+  pivot_wider(names_from = lag, values_from = value)
+```
+
+
+
+
+```{r fig.width=10, fig.height=10}
+rdut_lag %>%
+  group_by( month, day, tod, lag) %>%
+  summarise_if(is.numeric, mean) %>%
+  filter(!is.na(tod)) %>%
+  pivot_longer(cols=wbgt:hi, names_to='type', values_to = 'value') %>%
+  ggplot(aes(x=value, color = lag)) +
+  geom_boxplot() +
+  facet_grid(tod~type, scales='free')
+  
+```
+
+```{r}
+
+```
+
+
+
+
+
+
+
+

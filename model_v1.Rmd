@@ -1,0 +1,153 @@
+---
+title: "model_v1"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(dplyr)
+require(tidymodels)
+require(workflows)
+require(tune)
+require(tibble)
+require(rsample)
+require(xgboost)
+library(caret)
+library(vip)
+```
+
+```{r}
+rduw <- read_csv('rdu_warnings.csv')
+```
+
+```{r}
+rduw %>% 
+  group_by(date) %>%
+  summarise_if(is.numeric, list(min, max, mean, var), na.rm = TRUE) %>%
+  setNames(gsub("_fn1","_min",names(.))) %>% 
+  setNames(gsub("_fn2","_max",names(.))) %>%
+  setNames(gsub("_fn3","_mean",names(.))) %>%
+  setNames(gsub("_fn4","_var",names(.))) %>%
+  select(-starts_with(c('lat', 'lon'))) -> rduw_sum
+```
+
+```{r}
+rduw_sum %>%
+  mutate_if(is.numeric, lag, 1) %>%
+  select(-date) %>%
+  setNames(paste0('lag1_', names(.))) -> rduw_sum_lag1
+```
+
+```{r}
+rduw %>%
+  group_by(date) %>%
+  distinct(is_heat_day) %>%
+  ungroup() %>%
+  select(-date) ->rduw_heat_day
+
+cbind(rduw_heat_day, rduw_sum, rduw_sum_lag1) -> rduw_sum_lag
+```
+
+```{r}
+rduw_sum_lag %>%
+  mutate(month = factor(lubridate::month(date))) %>%
+  filter(month %in% c(5,6,7,8,9)) -> rduw_fin
+```
+
+
+max, min, var
+day of and 1 day lag 
+
+some graphs 
+
+
+
+decision tree using this data to sum up the data by day 
+```{r}
+# split data
+set.seed(513)
+rduw_fin$is_heat_day <- factor(rduw_fin$is_heat_day)
+
+# test train split 
+train.index <- createDataPartition(rduw_fin$is_heat_day, p = .8, list = FALSE)
+train_df <- rduw_fin[train.index,]
+test_df <- rduw_fin[-train.index,]
+
+# k fold cv 
+folds <- vfold_cv(train_df, 5, strata = is_heat_day)
+```
+
+
+```{r}
+# tune model 
+mod <- boost_tree(mtry = tune(), min_n = tune(), trees = tune(), tree_depth= tune()) %>%
+      set_mode("classification") %>%
+      set_engine("xgboost")
+    
+workflow <- workflow() %>%
+  add_model(mod) %>%
+  add_formula(is_heat_day ~.)
+
+res <- workflow %>%
+  tune_grid(grid = 25,
+            control = control_grid(save_pred = TRUE),
+            resamples = folds)
+```
+
+
+```{r}
+# get best model 
+res %>% select_best("accuracy")  -> best
+
+workflow %>%
+  finalize_workflow(best) -> final_wf
+
+best_res <- fit(final_wf, data = train_df)
+
+# predict on test data
+test_preds <- predict(best_res, test_df)
+```
+
+```{r}
+# test prediction accuracy 
+t <- cbind(truth = test_df$is_heat_day, test_preds)
+tp <- sum(t$truth == t$.pred_class) 
+fp <- nrow(t[t$truth == FALSE & t$.pred_class == TRUE,])
+fn <- nrow(t[t$truth == TRUE & t$.pred_class == FALSE,])
+
+
+accuracy <- tp / nrow(test_df)
+precision <- tp / (tp + fp)
+recall <- tp / (tp + fn)
+f1 <- (2 * precision * recall) / (precision + recall)
+```
+
+```{r}
+data.frame(accuracy, precision, recall, f1) %>%
+  mutate_all(~round(., 3))
+```
+
+
+```{r}
+# variable importance
+best_res %>% 
+  extract_fit_parsnip() %>% 
+  vip()
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

@@ -68,6 +68,7 @@ decision tree using this data to sum up the data by day
 # split data
 set.seed(513)
 rduw_fin$is_heat_day <- factor(rduw_fin$is_heat_day)
+rduw_fin %>% select(-date) -> rduw_fin
 
 # test train split 
 train.index <- createDataPartition(rduw_fin$is_heat_day, p = .8, list = FALSE)
@@ -79,7 +80,7 @@ folds <- vfold_cv(train_df, 5, strata = is_heat_day)
 ```
 
 
-```{r}
+```{r warning=FALSE}
 # tune model 
 mod <- boost_tree(mtry = tune(), min_n = tune(), trees = tune(), tree_depth= tune()) %>%
       set_mode("classification") %>%
@@ -89,8 +90,11 @@ workflow <- workflow() %>%
   add_model(mod) %>%
   add_formula(is_heat_day ~.)
 
+
+boost_grid <- expand.grid(tree_depth = 1:10, trees = c(25, 50, 100, 150, 250), min_n = c(2:10), mtry = c(5, 10, 15, 20))
+
 res <- workflow %>%
-  tune_grid(grid = 25,
+  tune_grid(grid = boost_grid,
             control = control_grid(save_pred = TRUE),
             resamples = folds)
 ```
@@ -126,6 +130,8 @@ f1 <- (2 * precision * recall) / (precision + recall)
 ```{r}
 data.frame(accuracy, precision, recall, f1) %>%
   mutate_all(~round(., 3))
+
+best
 ```
 
 

@@ -57,6 +57,8 @@ warnings_dates %>%
          time = hms::as_hms(format(as.POSIXct(date), format = "%H:%M:%S")), 
          date = lubridate::date(date)) -> warnings_dates
 
+readr::write_csv(warnings_dates, 'warnings_processed.csv')
+
 # join warnings and rdu data 
 left_join(rdu, warnings_dates, by=c('date', 'round_time'='time')) -> rduw
 

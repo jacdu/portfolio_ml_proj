@@ -135,13 +135,99 @@ best
 ```
 
 
+
+```{r}
+# split data
+
+# Now only lags
+set.seed(513)
+cbind(rduw_heat_day,rduw_sum$date, rduw_sum_lag1) -> rduw_lag_heat
+
+names(rduw_lag_heat)[names(rduw_lag_heat) == 'rduw_sum$date'] <- 'date'
+
+rduw_lag_heat %>%
+  mutate(month = factor(lubridate::month(date))) %>%
+  filter(month %in% c(5,6,7,8,9)) -> rduw_lag_fin
+
+rduw_lag_fin$is_heat_day <- factor(rduw_lag_fin$is_heat_day)
+rduw_lag_fin %>% select(-date) -> rduw_lag_fin
+
+# test train split 
+lag_train.index <- createDataPartition(rduw_lag_fin$is_heat_day, p = .8, list = FALSE)
+lag_train_df <- rduw_lag_fin[lag_train.index,]
+lag_test_df <- rduw_lag_fin[-lag_train.index,]
+
+# k fold cv 
+lag_folds <- vfold_cv(train_df, 5, strata = is_heat_day)
+```
+
+```{r warning=FALSE}
+# tune model 
+
+lag_mod <- boost_tree(mtry = tune(), min_n = tune(), trees = tune(), tree_depth= tune()) %>%
+      set_mode("classification") %>%
+      set_engine("xgboost")
+    
+lag_workflow <- workflow() %>%
+  add_model(lag_mod) %>%
+  add_formula(is_heat_day ~.)
+
+
+boost_grid <- expand.grid(tree_depth = 1:10, trees = c(25, 50, 100, 150, 250), min_n = c(2:10), mtry = c(5, 10, 15, 20))
+
+lag_res <- lag_workflow %>%
+  tune_grid(grid = boost_grid,
+            control = control_grid(save_pred = TRUE),
+            resamples = lag_folds)
+```
+
+
+```{r}
+# get best model 
+lag_res %>% select_best("accuracy")  -> lag_best
+
+lag_workflow %>%
+  finalize_workflow(lag_best) -> lag_final_wf
+
+lag_best_res <- fit(lag_final_wf, data = lag_train_df)
+
+# predict on test data
+lag_test_preds <- predict(lag_best_res, lag_test_df)
+```
+
+```{r}
+# test prediction accuracy 
+lag_t <- cbind(truth = lag_test_df$is_heat_day, lag_test_preds)
+lag_tp <- sum(lag_t$truth == lag_t$.pred_class) 
+lag_fp <- nrow(lag_t[lag_t$truth == FALSE & lag_t$.pred_class == TRUE,])
+lag_fn <- nrow(lag_t[lag_t$truth == TRUE & lag_t$.pred_class == FALSE,])
+
+
+lag_accuracy <- lag_tp / nrow(lag_test_df)
+lag_precision <- lag_tp / (lag_tp + lag_fp)
+lag_recall <- lag_tp / (lag_tp + lag_fn)
+lag_f1 <- (2 * lag_precision * lag_recall) / (lag_precision + lag_recall)
+```
+
+```{r}
+data.frame(lag_accuracy, lag_precision, lag_recall, lag_f1) %>%
+  mutate_all(~round(., 3))
+
+lag_best
+```
+
+
 ```{r}
 # variable importance
-best_res %>% 
+lag_best_res %>% 
   extract_fit_parsnip() %>% 
   vip()
 ```
 
+```{r}
+saveRDS(best, "best.rds")
+saveRDS(lag_best, "lag_best.rds")
+```
 
 
 

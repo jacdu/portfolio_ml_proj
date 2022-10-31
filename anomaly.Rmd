@@ -1,0 +1,119 @@
+---
+title: "anomaly"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(dplyr)
+require(tidymodels)
+require(workflows)
+require(tune)
+require(tibble)
+require(rsample)
+require(isotree)
+require(h2o) 
+```
+
+```{r}
+rduw <- read_csv('rdu_warnings.csv')
+```
+
+```{r}
+rduw %>% 
+  group_by(date) %>%
+  summarise_if(is.numeric, list(min, max, mean, var), na.rm = TRUE) %>%
+  setNames(gsub("_fn1","_min",names(.))) %>% 
+  setNames(gsub("_fn2","_max",names(.))) %>%
+  setNames(gsub("_fn3","_mean",names(.))) %>%
+  setNames(gsub("_fn4","_var",names(.))) %>%
+  select(-starts_with(c('lat', 'lon'))) -> rduw_sum
+```
+
+```{r}
+rduw_sum %>%
+  mutate_if(is.numeric, lag, 1) %>%
+  select(-date) %>%
+  setNames(paste0('lag1_', names(.))) -> rduw_sum_lag1
+```
+
+```{r}
+rduw %>%
+  group_by(date) %>%
+  distinct(is_heat_day) %>%
+  ungroup() %>%
+  select(-date) ->rduw_heat_day
+
+cbind(rduw_heat_day, rduw_sum, rduw_sum_lag1) -> rduw_sum_lag
+```
+
+```{r}
+rduw_sum_lag %>%
+  mutate(month = factor(lubridate::month(date))) %>%
+  filter(month %in% c(5,6,7,8,9)) -> rduw_fin
+
+cbind(rduw_heat_day,rduw_sum$date, rduw_sum_lag1) -> rduw_lag_heat
+
+names(rduw_lag_heat)[names(rduw_lag_heat) == 'rduw_sum$date'] <- 'date'
+
+rduw_lag_heat %>%
+  mutate(month = factor(lubridate::month(date))) %>%
+  filter(month %in% c(5,6,7,8,9)) -> rduw_lag_fin
+
+rduw_lag_fin$is_heat_day <- factor(rduw_lag_fin$is_heat_day)
+rduw_lag_fin %>% select(-date) -> rduw_lag_fin
+```
+
+```{r}
+# isolation forest
+iso_mod <- isolation.forest(rduw_lag_fin, ntrees=100, nthreads=1)
+scores <- predict(iso_mod, rduw_lag_fin, type="score")
+```
+
+```{r}
+res <- cbind(rduw_lag_fin,scores,as.factor(ifelse(scores >=0.50, "outlier", "normal")))
+names(res) <- c(names(res)[1:length(names(res))-1],"outlier")
+```
+
+```{r}
+ggplot(res, aes(x = lag1_hi_mean, y = lag1_wbgt_mean, color = outlier)) + 
+  geom_point() +
+  labs(alpha = "", colour="Legend") + 
+  theme_minimal()
+```
+
+```{r}
+# autoencoder
+h2o.no_progress()  # turn off progress bars
+h2o.init()
+```
+
+```{r}
+features <- as.h2o(rduw_lag_fin[,-1])
+ae1 <- h2o.deeplearning(
+  x = seq_along(features),
+  training_frame = features,
+  autoencoder = TRUE,
+  hidden = 2,
+  activation = 'Tanh',
+  sparse = TRUE
+)
+```
+```{r}
+ae1_codings <- h2o.deepfeatures(ae1, features, layer = 1)
+ae1_codings
+```
+
+```{r}
+ae1_codings <- as.data.frame(ae1_codings)
+ae1_codings$is_heat_day <- rduw_lag_fin$is_heat_day
+```
+
+
+```{r}
+ggplot(ae1_codings,aes(x=DF.L1.C1,y=DF.L1.C2,color=is_heat_day))+
+  geom_point() + 
+  theme_minimal()
+```
+

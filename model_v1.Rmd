@@ -56,189 +56,376 @@ rduw_sum_lag %>%
 ```
 
 
-max, min, var
-day of and 1 day lag 
+```{r}
+# doing it for time of day and lag 1
+# Morning 5 am to 12 pm (noon)
+# Afternoon 12 pm to 5 pm.
+# Evening 5 pm to 9 pm.
+# Night 9 pm to 4 am.
+rduw %>% 
+  filter(month %in% c(6,7,8,9)) %>%
+  mutate(hour = as.factor(str_sub(time, 1,2))) %>%
+  mutate(tod = case_when(
+    hour %in% c('22', '23', '00', '01', '02', '03', '04') ~ 'night',
+    hour %in% c('05','06', '07', '08', '09', '10', '11') ~ 'morning',
+    hour %in% c('12', '13','14','15','16','17') ~ 'afternoon',
+    hour %in% c('18','19','20','21') ~ 'evening'
+  )) -> rdut_tod
 
-some graphs 
 
+# summarize by tod and date 
+rdut_tod %>% 
+  select(-year, -month, -day) %>%
+  group_by(date, tod) %>%
+  summarise_if(is.numeric, list(min, max, mean, var), na.rm = TRUE) %>%
+  setNames(gsub("_fn1","_min",names(.))) %>% 
+  setNames(gsub("_fn2","_max",names(.))) %>%
+  setNames(gsub("_fn3","_mean",names(.))) %>%
+  setNames(gsub("_fn4","_var",names(.))) %>%
+  select(-starts_with(c('lat', 'lon'))) -> rduw_tod_sum
+
+rduw_tod_sum %>%
+  group_by(date) %>%
+  pivot_wider(names_from = tod, names_sep = '_', values_from= wbgt_min:hi_var) -> rduw_tod_sum
+
+rduw_tod_sum %>%
+  ungroup() %>%
+  mutate_if(is.numeric, lag, 1) %>%
+  select(-date) %>%
+  setNames(paste0('lag1_', names(.))) -> rduw_tod_lag1
+
+
+rduw %>%
+  filter(month %in% c(6,7,8,9)) %>%
+  group_by(date) %>%
+  distinct(is_heat_day) %>%
+  ungroup() %>%
+  select(-date) ->rduw_heat_day_summer
+
+
+cbind(rduw_heat_day_summer, rduw_tod_lag1) -> rduw_tod_lag1_heat
+
+rduw_tod_lag1_heat %>% filter(!is.na(lag1_wbgt_min_afternoon)) -> rduw_tod_lag1_fin
+rduw_tod_lag1_fin$is_heat_day <- factor(rduw_tod_lag1_fin$is_heat_day)
+  
+```
+
+```{r}
+# get lag 2 data 
+rduw_tod_sum %>%
+  ungroup() %>%
+  mutate_if(is.numeric, lag, 2) %>%
+  select(-date) %>%
+  setNames(paste0('lag2_', names(.))) -> rduw_tod_lag2
+
+cbind(rduw_heat_day_summer, rduw_tod_lag2) -> rduw_tod_lag2
+
+rduw_tod_lag2 %>% filter(!is.na(lag2_wbgt_min_afternoon)) -> rduw_tod_lag2_fin
+rduw_tod_lag2_fin$is_heat_day <- factor(rduw_tod_lag2_fin$is_heat_day)
+```
+
+```{r}
+# get lag 3 data 
+rduw_tod_sum %>%
+  ungroup() %>%
+  mutate_if(is.numeric, lag, 3) %>%
+  select(-date) %>%
+  setNames(paste0('lag3_', names(.))) -> rduw_tod_lag3
+
+cbind(rduw_heat_day_summer, rduw_tod_lag3) -> rduw_tod_lag3
+
+rduw_tod_lag3 %>% filter(!is.na(lag3_wbgt_min_afternoon)) -> rduw_tod_lag3_fin
+rduw_tod_lag3_fin$is_heat_day <- factor(rduw_tod_lag3_fin$is_heat_day)
+```
+
+```{r}
+# get lag 50 data 
+# rduw_tod_sum %>%
+#   ungroup() %>%
+#   mutate_if(is.numeric, lag, 50) %>%
+#   select(-date) %>%
+#   setNames(paste0('lag50_', names(.))) -> rduw_tod_lag50
+# 
+# cbind(rduw_heat_day_summer, rduw_tod_lag50) -> rduw_tod_lag50
+# 
+# rduw_tod_lag50 %>% filter(!is.na(lag50_wbgt_min_afternoon)) -> rduw_tod_lag50_fin
+# rduw_tod_lag50_fin$is_heat_day <- factor(rduw_tod_lag50_fin$is_heat_day)
+```
 
 
 decision tree using this data to sum up the data by day 
 ```{r}
 # split data
-set.seed(513)
-rduw_fin$is_heat_day <- factor(rduw_fin$is_heat_day)
-rduw_fin %>% select(-date) -> rduw_fin
+# set.seed(513)
+# rduw_fin$is_heat_day <- factor(rduw_fin$is_heat_day)
+# rduw_fin %>% select(-date) -> rduw_fin
 
 # test train split 
-train.index <- createDataPartition(rduw_fin$is_heat_day, p = .8, list = FALSE)
-train_df <- rduw_fin[train.index,]
-test_df <- rduw_fin[-train.index,]
+# train.index <- createDataPartition(rduw_fin$is_heat_day, p = .8, list = FALSE)
+# train_df <- rduw_fin[train.index,]
+# test_df <- rduw_fin[-train.index,]
 
 # k fold cv 
-folds <- vfold_cv(train_df, 5, strata = is_heat_day)
+# folds <- vfold_cv(train_df, 5, strata = is_heat_day)
 ```
 
 
 ```{r warning=FALSE}
 # tune model 
-mod <- boost_tree(mtry = tune(), min_n = tune(), trees = tune(), tree_depth= tune()) %>%
-      set_mode("classification") %>%
-      set_engine("xgboost")
-    
-workflow <- workflow() %>%
-  add_model(mod) %>%
-  add_formula(is_heat_day ~.)
-
-
-boost_grid <- expand.grid(tree_depth = 1:10, trees = c(25, 50, 100, 150, 250), min_n = c(2:10), mtry = c(5, 10, 15, 20))
-
-res <- workflow %>%
-  tune_grid(grid = boost_grid,
-            control = control_grid(save_pred = TRUE),
-            resamples = folds)
+# mod <- boost_tree(mtry = tune(), min_n = tune(), trees = tune(), tree_depth= tune()) %>%
+#       set_mode("classification") %>%
+#       set_engine("xgboost")
+#     
+# workflow <- workflow() %>%
+#   add_model(mod) %>%
+#   add_formula(is_heat_day ~.)
+# 
+# 
+# boost_grid <- expand.grid(tree_depth = 1:10, trees = c(25, 50, 100, 150, 250), min_n = c(2:10), mtry = c(5, 10, 15, 20))
+# 
+# res <- workflow %>%
+#   tune_grid(grid = boost_grid,
+#             control = control_grid(save_pred = TRUE),
+#             resamples = folds)
 ```
 
 
 ```{r}
 # get best model 
-res %>% select_best("accuracy")  -> best
+# res %>% select_best("accuracy")  -> best
 
-workflow %>%
-  finalize_workflow(best) -> final_wf
+# workflow %>%
+#   finalize_workflow(best_params) -> final_wf
 
-best_res <- fit(final_wf, data = train_df)
+# best_res <- fit(final_wf, data = train_df)
 
 # predict on test data
-test_preds <- predict(best_res, test_df)
+# test_preds <- predict(best_res, test_df)
 ```
 
 ```{r}
 # test prediction accuracy 
-t <- cbind(truth = test_df$is_heat_day, test_preds)
-tp <- sum(t$truth == t$.pred_class) 
-fp <- nrow(t[t$truth == FALSE & t$.pred_class == TRUE,])
-fn <- nrow(t[t$truth == TRUE & t$.pred_class == FALSE,])
-
-
-accuracy <- tp / nrow(test_df)
-precision <- tp / (tp + fp)
-recall <- tp / (tp + fn)
-f1 <- (2 * precision * recall) / (precision + recall)
+# t <- cbind(truth = test_df$is_heat_day, test_preds)
+# tp <- sum((t$truth == t$.pred_class) & t$truth == TRUE) 
+# fp <- nrow(t[t$truth == FALSE & t$.pred_class == TRUE,])
+# fn <- nrow(t[t$truth == TRUE & t$.pred_class == FALSE,])
+# 
+# 
+# accuracy <-sum(t$truth == t$.pred_class) / nrow(test_df)
+# precision <- tp / (tp + fp)
+# recall <- tp / (tp + fn)
+# f1 <- (2 * precision * recall) / (precision + recall)
 ```
 
 ```{r}
-data.frame(accuracy, precision, recall, f1) %>%
-  mutate_all(~round(., 3))
-
-best
+# data.frame(accuracy, precision, recall, f1) %>%
+#   mutate_all(~round(., 3))
 ```
-
-
+```{r}
+# best_res %>% 
+#   extract_fit_parsnip() %>% 
+#   vip()
+```
 
 ```{r}
 # split data
 
 # Now only lags
-set.seed(513)
-cbind(rduw_heat_day,rduw_sum$date, rduw_sum_lag1) -> rduw_lag_heat
-
-names(rduw_lag_heat)[names(rduw_lag_heat) == 'rduw_sum$date'] <- 'date'
-
-rduw_lag_heat %>%
-  mutate(month = factor(lubridate::month(date))) %>%
-  filter(month %in% c(5,6,7,8,9)) -> rduw_lag_fin
-
-rduw_lag_fin$is_heat_day <- factor(rduw_lag_fin$is_heat_day)
-rduw_lag_fin %>% select(-date) -> rduw_lag_fin
-
-# test train split 
-lag_train.index <- createDataPartition(rduw_lag_fin$is_heat_day, p = .8, list = FALSE)
-lag_train_df <- rduw_lag_fin[lag_train.index,]
-lag_test_df <- rduw_lag_fin[-lag_train.index,]
-
-# k fold cv 
-lag_folds <- vfold_cv(train_df, 5, strata = is_heat_day)
+# set.seed(513)
+# cbind(rduw_heat_day,rduw_sum$date, rduw_sum_lag1) -> rduw_lag_heat
+# 
+# names(rduw_lag_heat)[names(rduw_lag_heat) == 'rduw_sum$date'] <- 'date'
+# 
+# rduw_lag_heat %>%
+#   mutate(month = factor(lubridate::month(date))) %>%
+#   filter(month %in% c(5,6,7,8,9)) -> rduw_lag_fin
+# 
+# rduw_lag_fin$is_heat_day <- factor(rduw_lag_fin$is_heat_day)
+# rduw_lag_fin %>% select(-date) -> rduw_lag_fin
+# 
+# # test train split 
+# lag_train.index <- createDataPartition(rduw_lag_fin$is_heat_day, p = .8, list = FALSE)
+# lag_train_df <- rduw_lag_fin[lag_train.index,]
+# lag_test_df <- rduw_lag_fin[-lag_train.index,]
+# 
+# # k fold cv 
+# lag_folds <- vfold_cv(train_df, 5, strata = is_heat_day)
 ```
 
 ```{r warning=FALSE}
 # tune model 
 
-lag_mod <- boost_tree(mtry = tune(), min_n = tune(), trees = tune(), tree_depth= tune()) %>%
-      set_mode("classification") %>%
-      set_engine("xgboost")
-    
-lag_workflow <- workflow() %>%
-  add_model(lag_mod) %>%
-  add_formula(is_heat_day ~.)
-
-
-boost_grid <- expand.grid(tree_depth = 1:10, trees = c(25, 50, 100, 150, 250), min_n = c(2:10), mtry = c(5, 10, 15, 20))
-
-lag_res <- lag_workflow %>%
-  tune_grid(grid = boost_grid,
-            control = control_grid(save_pred = TRUE),
-            resamples = lag_folds)
+# lag_mod <- boost_tree(mtry = tune(), min_n = tune(), trees = tune(), tree_depth= tune()) %>%
+#       set_mode("classification") %>%
+#       set_engine("xgboost")
+#     
+# lag_workflow <- workflow() %>%
+#   add_model(lag_mod) %>%
+#   add_formula(is_heat_day ~.)
+# 
+# 
+# boost_grid <- expand.grid(tree_depth = 1:10, trees = c(25, 50, 100, 150, 250), min_n = c(2:10), mtry = c(5, 10, 15, 20))
+# 
+# lag_res <- lag_workflow %>%
+#   tune_grid(grid = boost_grid,
+#             control = control_grid(save_pred = TRUE),
+#             resamples = lag_folds)
 ```
 
 
 ```{r}
 # get best model 
-lag_res %>% select_best("accuracy")  -> lag_best
-
-lag_workflow %>%
-  finalize_workflow(lag_best) -> lag_final_wf
-
-lag_best_res <- fit(lag_final_wf, data = lag_train_df)
-
-# predict on test data
-lag_test_preds <- predict(lag_best_res, lag_test_df)
+# lag_res %>% select_best("accuracy")  -> lag_best
+# 
+# lag_workflow %>%
+#   finalize_workflow(lag_best) -> lag_final_wf
+# 
+# lag_best_res <- fit(lag_final_wf, data = lag_train_df)
+# 
+# # predict on test data
+# lag_test_preds <- predict(lag_best_res, lag_test_df)
 ```
 
 ```{r}
 # test prediction accuracy 
-lag_t <- cbind(truth = lag_test_df$is_heat_day, lag_test_preds)
-lag_tp <- sum(lag_t$truth == lag_t$.pred_class) 
-lag_fp <- nrow(lag_t[lag_t$truth == FALSE & lag_t$.pred_class == TRUE,])
-lag_fn <- nrow(lag_t[lag_t$truth == TRUE & lag_t$.pred_class == FALSE,])
-
-
-lag_accuracy <- lag_tp / nrow(lag_test_df)
-lag_precision <- lag_tp / (lag_tp + lag_fp)
-lag_recall <- lag_tp / (lag_tp + lag_fn)
-lag_f1 <- (2 * lag_precision * lag_recall) / (lag_precision + lag_recall)
+# lag_t <- cbind(truth = lag_test_df$is_heat_day, lag_test_preds)
+# lag_tp <- sum((lag_t$truth == lag_t$.pred_class) & lag_t$truth == TRUE) 
+# lag_fp <- nrow(lag_t[lag_t$truth == FALSE & lag_t$.pred_class == TRUE,])
+# lag_fn <- nrow(lag_t[lag_t$truth == TRUE & lag_t$.pred_class == FALSE,])
+# 
+# 
+# lag_accuracy <- lag_tp / nrow(lag_test_df)
+# lag_precision <- lag_tp / (lag_tp + lag_fp)
+# lag_recall <- lag_tp / (lag_tp + lag_fn)
+# lag_f1 <- (2 * lag_precision * lag_recall) / (lag_precision + lag_recall)
 ```
 
 ```{r}
-data.frame(lag_accuracy, lag_precision, lag_recall, lag_f1) %>%
-  mutate_all(~round(., 3))
+# data.frame(lag_accuracy, lag_precision, lag_recall, lag_f1) %>%
+#   mutate_all(~round(., 3))
 
-lag_best
-```
-
-
-```{r}
 # variable importance
-lag_best_res %>% 
-  extract_fit_parsnip() %>% 
-  vip()
+# lag_best_res %>% 
+#   extract_fit_parsnip() %>% 
+#   vip()
+```
+
+
+```{r}
+# saveRDS(best, "best.rds")
+# saveRDS(lag_best, "lag_best.rds")
+
+mod <- boost_tree(mtry = tune(), min_n = tune(), trees = tune(), tree_depth= tune()) %>%
+      set_mode("classification") %>%
+      set_engine("xgboost")
+
+workflow <- workflow() %>%
+  add_model(mod) %>%
+  add_formula(is_heat_day ~.)
+
+best_params <- readRDS('best.rds')
+
+workflow %>%
+  finalize_workflow(best_params) -> best_wf
+
+best_params
 ```
 
 ```{r}
-saveRDS(best, "best.rds")
-saveRDS(lag_best, "lag_best.rds")
+# function to run 
+
+fit_model <- function(wf, df) {
+  # split data 
+  train.index <- createDataPartition(df$is_heat_day, p = .8, list = FALSE)
+  train_df <- df[train.index,]
+  test_df <- df[-train.index,]
+  # returns res and dataframe of results 
+  res <- fit(wf, data = train_df)
+  preds <- predict(res, test_df)
+  
+  t <- cbind(truth = test_df$is_heat_day, preds)
+  tp <- sum((t$truth == t$.pred_class) & t$truth == TRUE) 
+  fp <- nrow(t[t$truth == FALSE & t$.pred_class == TRUE,])
+  fn <- nrow(t[t$truth == TRUE & t$.pred_class == FALSE,])
+  
+  
+  accuracy <-sum(t$truth == t$.pred_class) / nrow(test_df)
+  precision <- tp / (tp + fp)
+  recall <- tp / (tp + fn)
+  f1 <- (2 * precision * recall) / (precision + recall)
+  
+  res_table <- data.frame(accuracy, precision, recall, f1) %>%
+    mutate_all(~round(., 3))
+  
+  res %>% 
+    extract_fit_parsnip() %>%
+    vip() -> test
+  
+  return(list(test, res_table))
+}
+```
+
+
+### Current day 
+```{r}
+rduw_fin$is_heat_day <- factor(rduw_fin$is_heat_day)
+rduw_fin %>% select(-date) -> rduw_fin
+res <- fit_model(best_wf, rduw_fin)
+res[1]
+res[2]
+```
+
+
+### Lag 1 with more time breaks 
+```{r}
+res <- fit_model(best_wf, rduw_tod_lag1_fin)
+res[1]
+res[2]
 ```
 
 
 
 
+### Just Lag 2
+```{r}
+res <- fit_model(best_wf, rduw_tod_lag2_fin)
+res[1]
+res[2]
+```
+
+### Day of, lag1, lag2 
+```{r}
+cbind(rduw_tod_sum, rduw_tod_lag1_heat, rduw_tod_lag22) -> rduw_012
+
+rduw_012 %>%
+  ungroup() %>%
+  select(-date) %>%
+  filter(!is.na(lag1_wbgt_min_afternoon)) %>%
+  mutate(is_heat_day= factor(is_heat_day)) -> rduw_012_fin
+
+res <- fit_model(best_wf, rduw_012_fin)
+res[1]
+res[2]
+
+```
 
 
+```{r}
+rduw_012$date[-rduw_012_train.index] -> dates
+cbind(lag_t, dates)
 
+warnings <- read_csv('warnings_processed.csv')
+```
 
-
-
-
+```{r}
+warnings  %>%
+  select(-time) %>%
+  group_by(date) %>%
+  distinct() %>%
+  ungroup() %>%
+  filter(date %in% dates) %>%
+  count(name)
+```
 
 
 

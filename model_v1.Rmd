@@ -40,6 +40,30 @@ rduw_sum %>%
 ```
 
 ```{r}
+rduw_sum %>%
+  mutate_if(is.numeric, lag, 2) %>%
+  select(-date) %>%
+  setNames(paste0('lag2_', names(.))) -> rduw_sum_lag2
+```
+
+
+```{r}
+
+rduw %>%
+  group_by(date) %>%
+  distinct(is_heat_day) %>%
+  ungroup() -> heat_dates
+
+cbind(rduw_sum, rduw_sum_lag1, rduw_sum_lag2)  %>%
+  inner_join(heat_dates, by='date') %>%
+  filter(!is.na(lag2_wbgt_min)) %>%
+  mutate(month = factor(lubridate::month(date))) %>%
+  filter(month %in% c(5,6,7,8,9)) %>%
+  select(-date)-> rduw_sum_012_no_tod
+```
+
+
+```{r}
 rduw %>%
   group_by(date) %>%
   distinct(is_heat_day) %>%
@@ -156,17 +180,17 @@ rduw_tod_lag3_fin$is_heat_day <- factor(rduw_tod_lag3_fin$is_heat_day)
 decision tree using this data to sum up the data by day 
 ```{r}
 # split data
-# set.seed(513)
-# rduw_fin$is_heat_day <- factor(rduw_fin$is_heat_day)
-# rduw_fin %>% select(-date) -> rduw_fin
+set.seed(513)
+rduw_fin$is_heat_day <- factor(rduw_fin$is_heat_day)
+rduw_fin %>% select(-date) -> rduw_fin
 
-# test train split 
-# train.index <- createDataPartition(rduw_fin$is_heat_day, p = .8, list = FALSE)
-# train_df <- rduw_fin[train.index,]
-# test_df <- rduw_fin[-train.index,]
+# test train split
+train.index <- createDataPartition(rduw_fin$is_heat_day, p = .8, list = FALSE)
+train_df <- rduw_fin[train.index,]
+test_df <- rduw_fin[-train.index,]
 
-# k fold cv 
-# folds <- vfold_cv(train_df, 5, strata = is_heat_day)
+# k fold cv
+folds <- vfold_cv(train_df, 5, strata = is_heat_day)
 ```
 
 
@@ -339,10 +363,10 @@ fit_model <- function(wf, df) {
   train.index <- createDataPartition(df$is_heat_day, p = .8, list = FALSE)
   train_df <- df[train.index,]
   test_df <- df[-train.index,]
-  # returns res and dataframe of results 
+  # returns res and dataframe of results
   res <- fit(wf, data = train_df)
   preds <- predict(res, test_df)
-  
+
   t <- cbind(truth = test_df$is_heat_day, preds)
   tp <- sum((t$truth == t$.pred_class) & t$truth == TRUE) 
   fp <- nrow(t[t$truth == FALSE & t$.pred_class == TRUE,])
@@ -369,7 +393,7 @@ fit_model <- function(wf, df) {
 ### Current day 
 ```{r}
 rduw_fin$is_heat_day <- factor(rduw_fin$is_heat_day)
-rduw_fin %>% select(-date) -> rduw_fin
+# rduw_fin %>% select(-date) -> rduw_fin
 res <- fit_model(best_wf, rduw_fin)
 res[1]
 res[2]
@@ -395,11 +419,11 @@ res[2]
 
 ### Day of, lag1, lag2 
 ```{r}
-cbind(rduw_tod_sum, rduw_tod_lag1_heat, rduw_tod_lag22) -> rduw_012
+cbind(rduw_tod_sum, rduw_tod_lag1_heat, rduw_tod_lag2) -> rduw_012
 
 rduw_012 %>%
   ungroup() %>%
-  select(-date) %>%
+  select(-c(date, `is_heat_day...259`), is_heat_day = `is_heat_day...130`) %>%
   filter(!is.na(lag1_wbgt_min_afternoon)) %>%
   mutate(is_heat_day= factor(is_heat_day)) -> rduw_012_fin
 
@@ -408,6 +432,18 @@ res[1]
 res[2]
 
 ```
+
+
+```{r}
+rduw_sum_012_no_tod$is_heat_day <- factor(rduw_sum_012_no_tod$is_heat_day)
+res <- fit_model(best_wf, rduw_sum_012_no_tod)
+res[1]
+res[2]
+
+```
+
+
+
 
 
 ```{r}
@@ -426,6 +462,10 @@ warnings  %>%
   filter(date %in% dates) %>%
   count(name)
 ```
+
+daily, different time ranges, summary averages for predictors 
+day and night 
+
 
 
 

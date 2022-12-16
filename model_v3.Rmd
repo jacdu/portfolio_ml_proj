@@ -1,0 +1,779 @@
+---
+title: "Update 11/24"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning=FALSE, message=FALSE)
+
+library(tidyverse)
+library(ggplot2)
+library(tidymodels)
+library(caret)
+library(ROSE)
+library(DMwR)
+```
+
+### Data Processing 
+
+This dataset contains weather data from 1980-2022. Since we only have heat warning 
+data from 2005 onwards, I subset the weather data accordingly (and for summer months). 
+Instead of just one location point like before, there are multiple measurement locations. 
+I used google maps to make a rough approximation around Durham and filter the data 
+for the geographic coordinates. 
+
+I originally made the lag data to continue my analysis with the 1-day, 2-day, 3-day, and 
+5-day aggregate data (min, max, mean, variance. But because it creates approximately 
+~150 features in total which are highly correlated (ie 1-day heat index and 
+2-day heat index), I start with just using only features for 1-day aggregate statistics.  
+
+
+```{r}
+df <- read.table('era5land_1980_2022.txt', sep=',', header = TRUE)
+```
+
+```{r}
+# filter for years and months and lat / lon
+df %>%
+  mutate(year = as.numeric(str_sub(datetime, 1, 4))) %>%
+  # subset for 2005 onward 
+  filter(year >= 2005) %>%
+  mutate(month = as.numeric(str_sub(datetime, 6,7))) %>%
+  # subset for summer months
+  filter(month %in% c(5,6,7,8,9)) %>% 
+  # filter lat / long - 79, 78.8 ; 35.9, 36.1
+  filter(lat %in% c(35.9, 36, 36.1), lon %in% c(-78.8, -78.9, -79)) %>% 
+  # make month indicator variables 
+  mutate(month5 = ifelse(month == 5, 1, 0),
+         month6 = ifelse(month == 6, 1, 0), 
+         month7 = ifelse(month == 7, 1, 0),
+         month8 = ifelse(month == 8, 1, 0),
+         month9 = ifelse(month == 9, 1,0)) -> df
+
+# make date and select columns
+df %>%
+  mutate(date = as.POSIXct(str_sub(datetime, 1, 10))) %>%
+  select(date, air_temp = Tair, pressure = pres, solar, dewpoint, humidity = relhum, wind_10m:hi, month:date) -> df_fin
+```
+
+
+```{r}
+# make lag aggregate data 
+df_month <- df_fin %>% select(date, month:month9)
+
+df_fin %>% 
+  select(-c(month:month9)) %>%
+  group_by(date) %>%
+  summarise_if(is.numeric, list(min, max, mean, var), na.rm = TRUE) %>%
+  setNames(gsub("_fn1","_min",names(.))) %>% 
+  setNames(gsub("_fn2","_max",names(.))) %>%
+  setNames(gsub("_fn3","_mean",names(.))) %>%
+  setNames(gsub("_fn4","_var",names(.)))  -> df_lag1
+```
+
+```{r}
+# get lag day 1-5 dates 
+df_fin %>%
+  select(date) %>%
+  distinct() %>%
+  mutate(lag1 = lag(date, 1),
+         lag2 = lag(date, 2),
+         lag3 = lag(date, 3),
+         lag4 = lag(date, 4),
+         lag5 = lag(date, 5))%>%
+  filter(!is.na(lag5)) -> lag_dates
+```
+
+```{r}
+get_lag_data <- function(start, stop) {
+  
+  final_df <- data.frame()
+  
+  for(i in start:stop){
+    name <- paste0('lag', i)
+    df_fin %>%
+      select(-c(month:month9)) %>%
+      inner_join(lag_dates[, c('date', name)], by=c('date'=name)) %>%
+      select(-date, date = date.y) -> sub_df
+    
+    final_df <- rbind(final_df, sub_df)
+  }
+  return(final_df)
+}
+```
+
+
+```{r}
+# two day agg
+df2 <- get_lag_data(1, 2)
+
+df2 %>%
+  group_by(date) %>%
+  summarise_if(is.numeric, list(min, max, mean, var), na.rm = TRUE) %>%
+  setNames(gsub("_fn1","_min",names(.))) %>% 
+  setNames(gsub("_fn2","_max",names(.))) %>%
+  setNames(gsub("_fn3","_mean",names(.))) %>%
+  setNames(gsub("_fn4","_var",names(.))) %>%
+  setNames(paste0('agg2_', names(.))) -> df2_agg
+```
+
+
+```{r}
+# three day 
+df3 <- get_lag_data(1, 3)
+
+df3 %>%
+  group_by(date) %>%
+  summarise_if(is.numeric, list(min, max, mean, var), na.rm = TRUE) %>%
+  setNames(gsub("_fn1","_min",names(.))) %>% 
+  setNames(gsub("_fn2","_max",names(.))) %>%
+  setNames(gsub("_fn3","_mean",names(.))) %>%
+  setNames(gsub("_fn4","_var",names(.))) %>%
+  setNames(paste0('agg3_', names(.))) -> df3_agg
+```
+
+```{r}
+# five day 
+df5 <- get_lag_data(1, 5)
+
+df5 %>%
+  group_by(date) %>%
+  summarise_if(is.numeric, list(min, max, mean, var), na.rm = TRUE) %>%
+  setNames(gsub("_fn1","_min",names(.))) %>% 
+  setNames(gsub("_fn2","_max",names(.))) %>%
+  setNames(gsub("_fn3","_mean",names(.))) %>%
+  setNames(gsub("_fn4","_var",names(.))) %>%
+  setNames(paste0('agg5_', names(.))) -> df5_agg
+```
+
+
+```{r}
+warn <- readxl::read_xlsx('vtec_93.6530W_41.5300N_19860101_20221122 (1).xlsx')
+
+warn %>%
+  filter(ph_name %in% c('Excessive Heat', 'Heat' )) %>%
+  mutate(date_issued = as.POSIXct(str_sub(issued, 1, 10)),
+         date_expired = as.POSIXct(str_sub(expired, 1, 10)),
+         diff = as.integer(date_expired - date_issued)) -> warn
+
+warn %>%
+  filter(diff < 0 ) %>%
+  rename(date_expired = date_issued, date_issued = date_expired) %>%
+  mutate(diff = as.integer(date_expired - date_issued)) -> warn_neg
+
+warn %>% 
+  filter(diff >= 0) %>%
+  bind_rows(warn_neg) -> warn
+
+dates <- c()
+for (i in 1:nrow(warn)){
+  n <- seq(warn$date_issued[i], warn$date_expired[i], by='days')
+  dates <- c(dates, n)
+}
+
+warning_dates <- as.POSIXct(dates, origin = "1970-01-01")
+
+warn %>% count(name)
+```
+
+```{r}
+# make dataframe and add indicator column
+data.frame(date = warning_dates) %>%
+  distinct() %>%
+  mutate(is_heat = TRUE) -> warn_fin
+```
+
+```{r}
+# bind aggs 
+cbind(df2_agg, df3_agg, df5_agg) %>%
+  select(-c(agg2_date, agg3_date), date=agg5_date) %>%
+  inner_join(df_lag1, by='date') %>%
+  # left join onto warnings data 
+  left_join(warn_fin, by = 'date') %>%
+  mutate(is_heat = ifelse(is.na(is_heat), FALSE, is_heat)) -> df_main
+
+
+df_lag1 %>%
+  left_join(warn_fin, by= 'date') %>%
+  mutate(is_heat = ifelse(is.na(is_heat), FALSE, is_heat)) -> df_1
+```
+
+&nbsp;
+
+### EDA graphs
+
+- distribution of variables 
+- distribution of variables based on heat warning 
+- distribution by time of day 
+- distriubtion by heat warning of time of day 
+- distribution of variables based on lag day 
+
+```{r}
+rduw %>%
+  filter(month %in% c(5,6,7,8,9)) %>%
+  select(wbgt:hi, is_heat) %>%
+  pivot_longer(cols=wbgt:hi, names_to='type', values_to = 'value') %>%
+  ggplot(aes(x = value, color = is_heat)) +
+  geom_density() +
+  facet_wrap(~type, nrow=4, scales='free') +
+  theme_bw() 
+```
+
+
+&nbsp;
+
+
+### Data split 
+
+To prepare the data for modeling, I split the data 80/20 for training/test dataset 
+stratified based on the outcome variable (ie a boolean on whether an observation 
+has a heat warning issued). 
+
+&nbsp;
+
+```{r}
+X <- df_1 %>% select(-is_heat)
+y <-  df_1$is_heat
+
+# normalize data for X 
+X %>%
+  select(-date) %>%
+  select(where(~ n_distinct(.) > 1)) %>%
+  mutate_all(scale) -> X_norm
+
+# add back month indicator columns 
+df_month %>%
+  distinct() %>%
+  # slice(6:n()) %>%
+  select(-date, -month) %>%
+  bind_cols(X_norm) -> X_norm
+
+df_norm <- cbind(X_norm, y = factor(y))
+
+``` 
+
+```{r}
+# split data 
+set.seed(513)
+# df_norm$y <- ifelse(df_norm$y == TRUE, 1, 0)
+
+
+train.index <- rsample::initial_split(df_norm, prop = 0.8,
+                             strata = 'y')
+
+train_df <- rsample::training(train.index)
+test_df <- rsample::testing(train.index)
+
+folds <- rsample::vfold_cv(train_df, 5)
+
+X_train <- train_df %>% select(-y)
+X_test <- test_df %>% select(-y)
+y_train <- train_df %>% select(y)
+y_test <- test_df %>% select(y)
+
+```
+
+```{r}
+# calc metrics 
+calc_metrics <- function(p, y) {
+  accuracy <- mean(p == y)
+  tp <- sum((p == y) & y == TRUE)
+  fp <- sum(y == FALSE & p == TRUE)
+  fn <- sum(y == TRUE & p == FALSE)
+
+  precision <- tp / (tp + fp)
+  if(is.na(precision)){
+    precision <- 0 
+  }
+
+  recall <- tp / (tp + fn)
+  if(is.na(recall)){
+    recall <- 0
+  }
+  f1 <- (2 * precision * recall) / (precision + recall)
+  if(is.na(f1)){
+    f1 <- 0
+  }
+  
+  return(data.frame(accuracy, precision, recall, f1))
+}
+```
+
+
+
+
+### Fitting 'original' models 
+
+The models that I am trying are unregularized logistic regression, ridge regression, 
+lasso regression, elastic net logistic regression, decision trees, and boosting. 
+I first fit the following models with the original training dataset. 
+
+For everything besides the unregularized logistic regression, I use 5-fold 
+cross-validation to tune the hyperparameters. For the regularized regressions, 
+I tune 100 values in the range $\lambda \in (0.00001, 0.001)$. Elastic net in 
+addition tuned for 25 values for $\alpha$ between 0 and 1. For decision trees, 
+cost complexity and tree depth were tuned for 5 values each. For boosting, the 
+number of tress, tree depth, and minimum number of points to split on were tuned
+for 3 values each. 
+
+All of the following performance metrics are reported 
+on the model with the best performing set of hyperparameters. 
+
+&nbsp;
+  
+```{r}
+# logistic regression
+unreg_lr <- function(X, y, X_pred, y_pred) {
+  y <- as.logical(y)
+  y_pred <- as.logical(y_pred)
+  df <- cbind(X, y)
+  glm.fit <- glm(y ~., data=df)
+  glm_probs <- predict(glm.fit, X_pred, type='response')
+  glm_preds <- ifelse(glm_probs > 0.5, TRUE, FALSE)
+  
+  return(list(glm.fit, calc_metrics(glm_preds, y_pred)))
+}
+
+orig_lr <- unreg_lr(X_train, y_train$y, X_train, y_train$y)
+```
+
+
+```{r}
+# ridge reg
+lambdas <- 10^seq(-3, 5, length.out = 100)
+
+ridge <- function(X, y, X_pred, y_pred){
+  y <- as.logical(y)
+  y_pred <- as.logical(y_pred)
+  glm.ridge.fit <- glmnet::cv.glmnet(data.matrix(X), y, alpha=0, lambda=lambdas, nfolds=5)
+  glm.ridge.tuned.fit <- glmnet::glmnet(X, y, alpha = 0, lambda = glm.ridge.fit$lambda.min)
+  
+  glm_ridge_probs <- predict(glm.ridge.tuned.fit, data.matrix(X_pred), type='response')
+  glm_ridge_preds <- ifelse(glm_ridge_probs > 0.5, TRUE, FALSE)
+  
+  return(list(glm.ridge.tuned.fit, calc_metrics(glm_ridge_preds, y_pred)))
+  
+}
+
+orig_ridge<- ridge(X_train, y_train$y, X_train, y_train$y)
+
+```
+
+```{r}
+# lasso reg
+lasso <- function(X, y, X_pred, y_pred ){
+  y <- as.logical(y)
+  y_pred <- as.logical(y_pred)
+  
+  glm.lasso.fit <- glmnet::cv.glmnet(data.matrix(X), y, alpha=1, lambda=lambdas, nfolds=5)
+  glm.lasso.tuned.fit <- glmnet::glmnet(X, y, alpha = 1, lambda = glm.lasso.fit$lambda.min)
+  
+  glm_lasso_probs <- predict(glm.lasso.tuned.fit, data.matrix(X_pred), type='response')
+  glm_lasso_preds <- ifelse(glm_lasso_probs > 0.5, TRUE, FALSE)
+  
+  return(list(glm.lasso.tuned.fit, calc_metrics(glm_lasso_preds, y_pred)))
+  
+}
+
+orig_lasso <- lasso(X_train, y_train$y,X_train, y_train$y)
+
+
+```
+ 
+```{r include=FALSE}
+# elastic net
+train_control <- trainControl(method = "repeatedcv",
+                              number = 5,
+                              repeats = 2,
+                              search = "random",
+                              verboseIter = TRUE)
+
+elastic_net <- function(X, y, X_pred, y_pred){
+  y_pred <- as.logical(y_pred)
+  elastic_net_model <- train(y ~ .,
+                           data = cbind(y, X),
+                           method = "glmnet",
+                           tuneLength = 25,
+                           trControl = train_control)
+
+  glm_en_probs <- predict(elastic_net_model, X_pred, type='prob')
+  glm_en_preds <- ifelse(glm_en_probs > 0.5, TRUE, FALSE)
+  
+  return(list(elastic_net_model, calc_metrics(glm_en_preds, y_pred)))
+  
+}
+
+orig_en <- elastic_net(X_train, y_train$y, X_train, y_train$y)
+
+```
+
+
+```{r include=FALSE}
+# decision tree 
+dt <- function(folds_i, df, pred_df, y_pred){
+  # tune model 
+  dt_mod <- decision_tree(cost_complexity = tune(), tree_depth= tune()) %>%
+    set_engine('rpart') %>%
+    set_mode("classification") 
+  
+  dt_workflow <- workflow() %>%
+    add_model(dt_mod) %>%
+    add_formula(y ~.)
+  
+  dt_grid <- grid_regular(cost_complexity(),
+                            tree_depth(),
+                            levels = 5)
+  
+  dt_res <- dt_workflow %>%
+    tune_grid(grid = dt_grid,
+              control = control_grid(save_pred = TRUE),
+              resamples = folds_i)
+  
+  # fit best params
+  dt_res %>% select_best('roc_auc') -> dt_best_params
+  dt_workflow %>%
+    finalize_workflow(dt_best_params) -> best_dt_wf
+  best_dt_res <- fit(best_dt_wf, data = df)
+  
+  # predict 
+  dt_preds <- predict(best_dt_res, pred_df)
+  return(list(best_dt_res, calc_metrics(dt_preds$.pred_class, y_pred)))
+  
+}
+
+orig_dt <- dt(folds, train_df, train_df, y_train$y)
+
+```
+
+ 
+```{r include=FALSE}
+# boosting
+boost <- function(folds, train_df, pred_df, y_pred){
+   # tune model 
+  boost_mod <- boost_tree(min_n = tune(), trees = tune(), tree_depth= tune()) %>%
+        set_mode("classification") %>%
+        set_engine("xgboost")
+  
+  boost_workflow <- workflow() %>%
+    add_model(boost_mod) %>%
+    add_formula(y ~.)
+  
+  boost_grid <- grid_regular(trees(),
+                             min_n(),
+                            tree_depth(),
+                            levels = 3)
+  
+  boost_res <- boost_workflow %>%
+    tune_grid(grid = boost_grid,
+              control = control_grid(save_pred = TRUE),
+              resamples = folds)
+  
+  # fit best params
+  boost_res %>% select_best('roc_auc') -> boost_best_params
+  boost_workflow %>%
+    finalize_workflow(boost_best_params) -> best_boost_wf
+  best_boost_res <- fit(best_boost_wf, data = train_df)
+  
+  # predict 
+  boost_preds <- predict(best_boost_res, pred_df)
+  return(list(best_boost_res, calc_metrics(boost_preds$.pred_class, y_pred)))
+  
+}
+
+orig_boost <- boost(folds, train_df, train_df, y_train$y)
+```
+
+
+### Fitting models with balanced data techniques 
+
+In the original data, heat warning days comprise about 5% of all data. Since 
+this class imbalance causes high accuracy but poor precision, recall, and F1, 
+I wanted to try different resampling methods to see if these models will perform 
+better in classifying heat warning days. 
+
+I tried four methods - undersampling majority class, oversampling minority class, 
+mixing both, and the SMOTE method (which uses KNN to generate new samples similar 
+to that of the minority class). The first three methods have function in `ROSE` package, 
+and the last come from `DMwR` package. 
+
+&nbsp;
+
+### Performance on training data 
+
+**do cross validation on each sampling**
+
+```{r}
+# different data options 
+over_train_df <- ovun.sample(y ~ ., data = train_df, method = "over",N = (2*sum(train_df$y == FALSE)))$data
+under_train_df <- ovun.sample(y ~ ., data = train_df, method = "under",N = (2*sum(train_df$y == TRUE)), seed=512)$data
+both_train_df <- ovun.sample(y ~ ., data = train_df, method = "both", p=0.5,                             N=1000, seed = 1)$data
+
+t <- train_df 
+rownames(t) <- NULL
+t %>%
+  mutate_at(c(1:41), as.numeric) -> t
+
+smote_train_df <- SMOTE(y ~ ., data=data.frame(t), perc.over = 600, perc.under = 100)
+```
+
+```{r}
+# make new folds 
+over_folds <- rsample::vfold_cv(over_train_df, 5)
+under_folds <- rsample::vfold_cv(under_train_df, 5)
+both_folds <- rsample::vfold_cv(both_train_df, 5)
+smote_folds <- rsample::vfold_cv(smote_train_df, 5)
+```
+
+
+```{r}
+# logistic regression 
+over_lr <- unreg_lr(over_train_df[, -42], over_train_df$y, over_train_df[, -42], over_train_df$y)
+under_lr <- unreg_lr(under_train_df[, -42], under_train_df$y, under_train_df[, -42], under_train_df$y)
+both_lr <- unreg_lr(both_train_df[, -42], both_train_df$y, both_train_df[, -42], both_train_df$y)
+smote_lr <- unreg_lr(smote_train_df[, -42], smote_train_df$y, smote_train_df[, -42], smote_train_df$y)
+
+log_reg_res <- rbind(orig_lr[2][[1]], over_lr[2][[1]], under_lr[2][[1]], both_lr[2][[1]], smote_lr[2][[1]]) 
+log_reg_res$sampling_type <- c('original', 'oversample', 'undersample', 'both', 'smote')
+
+log_reg_res %>%
+  select(`Sampling Method` = sampling_type, Accuracy = accuracy, Precision = precision, Recall = recall, `F1`=f1) %>%
+  mutate_if(is.numeric, round, 3) %>%
+  kableExtra::kbl(caption = 'Unregularized logistic regression training data results') %>%
+  kableExtra::kable_styling(bootstrap_options = c("striped", 'condensed'), full_width = F, latex_options = 'hold_position')
+```
+
+&nbsp;
+
+```{r}
+# ridge
+over_ridge <- ridge(over_train_df[, -42], over_train_df$y, over_train_df[, -42], over_train_df$y)
+under_ridge <- ridge(under_train_df[, -42], under_train_df$y, under_train_df[, -42], under_train_df$y)
+both_ridge <- ridge(both_train_df[, -42], both_train_df$y, both_train_df[, -42], both_train_df$y)
+smote_ridge <- ridge(smote_train_df[, -42], smote_train_df$y, smote_train_df[, -42], smote_train_df$y)
+
+ridge_reg_res <- rbind(orig_ridge[2][[1]], over_ridge[2][[1]], under_ridge[2][[1]], both_ridge[2][[1]], smote_ridge[2][[1]]) 
+ridge_reg_res$sampling_type <- c('original', 'oversample', 'undersample', 'both', 'smote')
+
+ridge_reg_res %>%
+  select(`Sampling Method` = sampling_type, Accuracy = accuracy, Precision = precision, Recall = recall, `F1`=f1) %>%
+  mutate_if(is.numeric, round, 3) %>%
+  kableExtra::kbl(caption = 'Ridge Regression training data results') %>%
+  kableExtra::kable_styling(bootstrap_options = c("striped", 'condensed'), full_width = F, latex_options = 'hold_position')
+```
+
+&nbsp;
+
+```{r}
+# lasso
+over_lasso <- lasso(over_train_df[, -42], over_train_df$y, over_train_df[, -42], over_train_df$y)
+under_lasso <- lasso(under_train_df[, -42], under_train_df$y, under_train_df[, -42], under_train_df$y)
+both_lasso <- lasso(both_train_df[, -42], both_train_df$y, both_train_df[, -42], both_train_df$y)
+smote_lasso <- lasso(smote_train_df[, -42], smote_train_df$y, smote_train_df[, -42], smote_train_df$y)
+
+lasso_reg_res <- rbind(orig_lasso[2][[1]], over_lasso[2][[1]], under_lasso[2][[1]], both_lasso[2][[1]], smote_lasso[2][[1]]) 
+lasso_reg_res$sampling_type <- c('original', 'oversample', 'undersample', 'both', 'smote')
+
+lasso_reg_res %>%
+  select(`Sampling Method` = sampling_type, Accuracy = accuracy, Precision = precision, Recall = recall, `F1`=f1) %>%
+  mutate_if(is.numeric, round, 3) %>%
+  kableExtra::kbl(caption = 'Lasso Regression training data results') %>%
+  kableExtra::kable_styling(bootstrap_options = c("striped", 'condensed'), full_width = F, latex_options = 'hold_position')
+```
+
+&nbsp;
+
+```{r include=FALSE}
+# elastic net
+over_en <- elastic_net(over_train_df[, -42], over_train_df$y, over_train_df[, -42], over_train_df$y)
+under_en <- elastic_net(under_train_df[, -42], under_train_df$y, under_train_df[, -42], under_train_df$y)
+both_en <- elastic_net(both_train_df[, -42], both_train_df$y, both_train_df[, -42], both_train_df$y)
+smote_en <- elastic_net(smote_train_df[, -42], smote_train_df$y, smote_train_df[, -42], smote_train_df$y)
+```
+
+```{r}
+en_res <- rbind(orig_en[2][[1]], over_en[2][[1]], under_en[2][[1]], both_en[2][[1]], smote_en[2][[1]]) 
+en_res$sampling_type <- c('original', 'oversample', 'undersample', 'both', 'smote')
+
+en_res %>%
+  select(`Sampling Method` = sampling_type, Accuracy = accuracy, Precision = precision, Recall = recall, `F1`=f1) %>%
+  mutate_if(is.numeric, round, 3) %>%
+  kableExtra::kbl(caption = 'Elasticnet logistic regression training data results') %>%
+  kableExtra::kable_styling(bootstrap_options = c("striped", 'condensed'), full_width = F, latex_options = 'hold_position')
+```
+
+&nbsp;
+
+```{r}
+# decision tree
+over_dt <- dt(over_folds, over_train_df, over_train_df, over_train_df$y)
+under_dt <- dt(under_folds, under_train_df, under_train_df, under_train_df$y)
+both_dt <- dt(both_folds, both_train_df, both_train_df, both_train_df$y)
+smote_dt <- dt(smote_folds, smote_train_df, smote_train_df, smote_train_df$y)
+
+dt_res <- rbind(orig_dt[2][[1]], over_dt[2][[1]], under_dt[2][[1]], both_dt[2][[1]], smote_dt[2][[1]]) 
+dt_res$sampling_type <- c('original', 'oversample', 'undersample', 'both', 'smote')
+
+dt_res %>%
+  select(`Sampling Method` = sampling_type, Accuracy = accuracy, Precision = precision, Recall = recall, `F1`=f1) %>%
+  mutate_if(is.numeric, round, 3) %>%
+  kableExtra::kbl(caption = 'Decision tree training data results') %>%
+  kableExtra::kable_styling(bootstrap_options = c("striped", 'condensed'), full_width = F, latex_options = 'hold_position')
+```
+
+&nbsp;
+
+```{r include=FALSE}
+# boosting
+over_boost <- boost(over_folds, over_train_df, over_train_df, over_train_df$y)
+under_boost <- boost(under_folds, under_train_df, under_train_df, under_train_df$y)
+both_boost <- boost(both_folds, both_train_df, both_train_df, both_train_df$y)
+smote_boost <- boost(smote_folds, smote_train_df, smote_train_df, smote_train_df$y)
+```
+```{r}
+boost_res <- rbind(orig_boost[2][[1]], over_boost[2][[1]], under_boost[2][[1]], both_boost[2][[1]], smote_boost[2][[1]]) 
+boost_res$sampling_type <- c('original', 'oversample', 'undersample', 'both', 'smote')
+
+boost_res %>%
+  select(`Sampling Method` = sampling_type, Accuracy = accuracy, Precision = precision, Recall = recall, `F1`=f1) %>%
+  mutate_if(is.numeric, round, 3) %>%
+  kableExtra::kbl(caption = 'Boosting training data results') %>%
+  kableExtra::kable_styling(bootstrap_options = c("striped", 'condensed'), full_width = F, latex_options = 'hold_position')
+```
+
+&nbsp;
+
+### Performance on test data 
+
+For each modeling method, I take the best performing model fit based on sampling 
+method and predict on the test data. 
+
+The best parameters are as follows:
+* Lasso regression under SMOTE: $\lambda= 0.001$
+* Ridge regression under SMOTE: $\lambda= 0.001$
+* Elastic net under SMOTE: $\alpha = 0.649, \lambda = 0.00185$
+* Decision tree under oversampling: $\text{cost complexity} = 1e-10, \text{tree depth} = 15$
+* Boosting under : $\text{tree depth} = 8, \text{min n} = 2, \text{number of trees}= 1000$
+
+&nbsp; 
+
+```{r}
+X_test %>%
+  mutate_all(as.numeric) -> X_test_num
+
+# lr 
+test_lr_probs <- predict(smote_lr[1][[1]], X_test_num, type='response')
+test_lr_preds <- ifelse(test_lr_probs > 0.5, TRUE, FALSE)
+test_lr_res <- calc_metrics(test_lr_preds, y_test$y)
+
+# ridge 
+test_ridge_probs <- predict(smote_ridge[1][[1]], data.matrix(X_test_num), type='response')
+test_ridge_preds <- ifelse(test_ridge_probs > 0.5, TRUE, FALSE)
+test_ridge_res <- calc_metrics(test_ridge_preds, y_test$y)
+
+# lasso 
+test_lasso_probs <- predict(smote_lasso[1][[1]], data.matrix(X_test_num), type='response')
+test_lasso_preds <- ifelse(test_lasso_probs > 0.5, TRUE, FALSE)
+test_lasso_res <- calc_metrics(test_lasso_preds, y_test$y)
+
+# elastic net 
+test_en_probs <- predict(smote_en[1][[1]], X_test_num, type='prob')
+test_en_preds <- ifelse(test_en_probs > 0.5, TRUE, FALSE)
+test_en_res <- calc_metrics(test_en_preds, y_test$y)
+
+# dt 
+test_dt_preds <- predict(over_dt[1][[1]], X_test)
+test_dt_res <- calc_metrics(test_dt_preds$.pred_class, y_test$y)
+
+# boosting 
+test_boost_preds <- predict(smote_boost[1][[1]], X_test_num)
+test_boost_res <- calc_metrics(test_boost_preds$.pred_class, y_test$y)
+
+test_res <- rbind(test_lr_res, test_ridge_res, test_lasso_res, test_en_res, test_dt_res, test_boost_res)
+test_res$model <- c('Unregularized Logistic Regression', 'Ridge Regression', 'Lasso Regression', 'Elastic-net Regression', 'Decision Trees', 'Boosting')
+
+test_res %>%
+  select(`Model` = model, Accuracy = accuracy, Precision = precision, Recall = recall, `F1`=f1) %>%
+  mutate_if(is.numeric, round, 3) %>%
+  kableExtra::kbl(caption = 'Testing data results') %>%
+  kableExtra::kable_styling(bootstrap_options = c("striped", 'condensed'), full_width = F, latex_options = 'hold_position')
+```
+
+
+### Variable Importance 
+
+```{r}
+# linear regression
+data.frame(estimate = smote_lr[1][[1]]$coefficients) %>%
+  arrange(desc(abs(estimate))) %>%
+  dplyr::slice(1:10)
+
+```
+
+
+```{r}
+# ridge 
+data.frame(as.matrix(smote_ridge[1][[1]]$beta)) %>%
+  dplyr::select(estimate = `s0`) %>%
+  arrange(desc(abs(estimate))) %>%
+  dplyr::slice(1:10)
+```
+
+
+```{r}
+# lasso 
+data.frame(as.matrix(smote_lasso[1][[1]]$beta)) %>%
+  dplyr::select(estimate = `s0`) %>%
+  filter(estimate > 0) %>%
+  arrange(desc(abs(estimate)))
+```
+
+
+```{r}
+# en
+coefs <- predict(smote_en[1][[1]]$finalModel, type = "coefficients", s = orig_en[1][[1]]$bestTune$lambda)
+
+data.frame(as.matrix(coefs)) %>%
+  dplyr::select(estimate = `s1`) %>%
+  arrange(desc(abs(estimate))) %>%
+  dplyr::slice(2:11)
+```
+
+
+```{r}
+# dt 
+over_dt[1][[1]] %>%
+  extract_fit_parsnip() %>%
+  vip::vip() + 
+  labs(title = 'Decision Trees Variable Importance')
+  
+```
+
+
+```{r}
+# boost 
+smote_boost[1][[1]] %>%
+  extract_fit_parsnip() %>%
+  vip::vip() + 
+  labs(title = 'Boosted Trees Variable Importance')
+```
+
+
+
+
+
+
+
+```{r}
+# get principal components
+# pca_res <- stats::prcomp(X_train, center = TRUE,scale. = TRUE)
+# 
+# pcs <- data.frame(pca_res$rotation)
+# pcs <- tibble::rownames_to_column(pcs, "var")
+```
+
+
+
+
+
+
+

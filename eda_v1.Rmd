@@ -1,0 +1,283 @@
+---
+title: "Untitled"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message=FALSE)
+library(tidyverse)
+```
+
+```{r}
+rdu <- read_csv('weather_station_data_20220915/rdu_station_data.csv')
+# eco <- read_csv('weather_station_data_20220915/econet_weather_station_data.csv')
+# roxboro
+# tdf <- read_csv('weather_station_data_20220915/tdf_station_data.csv') 
+```
+
+```{r date-process}
+# get year, month, day from date 
+
+# split into separate columns
+date <- unique(rdu$date)
+
+get_date_component <- function(x, n) {
+  res <- str_split(x, '/')
+  return(res[[1]][n])
+}
+
+month <- sapply(date, get_date_component, n=1)
+day <- sapply(date, get_date_component, n=2)
+year <- sapply(date, get_date_component, n=3)
+
+# make df 
+dates_df <- data.frame(date, month, day,year, row.names=NULL)
+
+rdu %>% 
+  left_join(dates_df, by='date') -> rdut
+
+# make factor
+rdut$month <- as.factor(rdut$month)
+rdut$day <- as.factor(rdut$day)
+rdut$year <- as.factor(rdut$year)
+
+# MAKES RDUT DF 
+```
+
+```{r}
+# add extreme heat condition var 
+rdut %>% 
+  mutate(eh = case_when(
+    (hi >= 124) ~ 'Extreme Danger',
+    (hi >= 103) & (hi < 124) ~ 'Danger',
+    (hi >= 90) & (hi < 103) ~ 'Extreme Caution',
+    (hi >= 80) & (hi < 90) ~ 'Caution',
+    TRUE ~ "None"
+  )) -> rdut
+```
+
+summary stats 
+
+density by factor 
+```{r}
+# there are no extreme danger points 
+rdut %>% 
+  count(eh)
+
+# histogram by each variable overall 
+rdut %>%
+  select(wbgt:hi, year, month, day)%>%
+  pivot_longer(cols=wbgt:hi, names_to='type', values_to = 'value') %>%
+  ggplot(aes(x = value)) +
+  geom_density() +
+  facet_wrap(~type, nrow=4, scales='free')+ 
+  theme_bw()
+  
+```
+
+density by month for summer
+```{r}
+rdut %>%
+  select(wbgt:hi, year, month, day) %>%
+  filter(month %in% c(5,6,7,8,9)) %>%
+  pivot_longer(cols=wbgt:hi, names_to='type', values_to = 'value') %>%
+  ggplot(aes(x = value, color = month)) +
+  geom_density() +
+  facet_wrap(~type, nrow=4, scales='free') + 
+  theme_bw()
+```
+
+```{r}
+rdut %>%
+  select(wbgt:hi, year, month, day) %>%
+  filter(month %in% c(5,6,7,8,9)) %>%
+  pivot_longer(cols=wbgt:hi, names_to='type', values_to = 'value') %>%
+  ggplot(aes(x = value, fill = month)) +
+  geom_boxplot() +
+  facet_wrap(~type, nrow=4, scales='free') +
+  theme_bw() 
+```
+
+density by year for summer 
+```{r}
+rdut %>%
+  select(wbgt:hi, year, month, day) %>%
+  filter(month %in% c(5,6,7,8,9),
+         year %in% c(2018, 2019, 2020,2021)) %>%
+  pivot_longer(cols=wbgt:hi, names_to='type', values_to = 'value') %>%
+  ggplot(aes(x = value, color = year)) +
+  geom_density() +
+  facet_wrap(~type, nrow=4, scales='free') +
+  theme_bw() 
+```
+```{r}
+rdut %>%
+  select(wbgt:hi, year, month, day) %>%
+  filter(month %in% c(5,6,7,8,9),
+         year %in% c(2018, 2019, 2020,2021)) %>%
+  pivot_longer(cols=wbgt:hi, names_to='type', values_to = 'value') %>%
+  ggplot(aes(x = value, fill = year)) +
+  geom_boxplot() +
+  facet_wrap(~type, nrow=4, scales='free') +
+  theme_bw() 
+```
+
+distribution of factor by time of day for summer months
+```{r fig.width=10, fig.height=8}
+rdut$time2 <- as.character(rdut$time)
+rdut %>%
+  mutate(hour = as.factor(str_sub(time2, 1,2))) %>%
+  select(wbgt:hi, year, month, day, hour) %>%
+  filter(month %in% c(5,6,7,8,9)) %>%
+  pivot_longer(cols=wbgt:hi, names_to='type', values_to = 'value') %>%
+  ggplot(aes(x = value, fill = hour)) +
+  geom_boxplot() +
+  facet_wrap(~type, nrow=4, scales='free') +
+  theme_bw() 
+
+```
+
+```{r}
+# make heat warning boolean variable 
+rdut %>%
+  mutate(is_eh = ifelse(eh == 'None', FALSE, TRUE)) -> rdut
+
+rdut %>% 
+  mutate(is_eh_day = ifelse(date %in% eh_dates$date, TRUE, FALSE)) -> rdut
+
+```
+
+compare heat warning vs not for each factor 
+```{r}
+rdut %>%
+  filter(month %in% c(5,6,7,8,9)) %>%
+  select(wbgt:hi, is_eh) %>%
+  pivot_longer(cols=wbgt:hi, names_to='type', values_to = 'value') %>%
+  ggplot(aes(x = value, color = is_eh)) +
+  geom_density() +
+  facet_wrap(~type, nrow=4, scales='free') +
+  theme_bw() 
+  
+```
+
+```{r}
+rdut %>%
+  filter(month %in% c(5,6,7,8,9)) %>%
+  select(wbgt:hi, is_eh) %>%
+  pivot_longer(cols=wbgt:hi, names_to='type', values_to = 'value') %>%
+  ggplot(aes(x = value, color = is_eh)) +
+  geom_boxplot() +
+  facet_wrap(~type, nrow=4, scales='free') +
+  theme_bw() +
+  labs(color = 'Heat Index Warning')
+```
+
+```{r}
+rdut$day <- factor(rdut$day, levels=c(1:31))
+```
+
+```{r fig.width=10, fig.height=5}
+rdut %>% 
+  filter(month %in% c(5,6,7,8,9)) %>%
+  mutate(hour = as.factor(str_sub(time2, 1,2))) %>%
+  mutate(tod = case_when(
+    hour %in% c('22', '23', '00', '01', '02', '03', '04', '05') ~ 'Evening',
+    hour %in% c('06', '07', '08', '09', '10', '11') ~ 'Morning',
+    hour %in% c('12', '13','14','15','16','17') ~ 'Afternoon',
+    hour %in% c('18','19','20','21') ~ 'Early Evening'
+  )) -> rdut_tod
+
+rdut_tod$tod <- factor(rdut_tod$tod, levels = c('Morning', 'Afternoon', 'Early Evening', 'Evening'))
+
+rdut_tod %>%
+  filter(tod == 'Afternoon') %>%
+  select(wbgt:hi, month:year, is_eh_day, tod) %>%
+  group_by( month, day, is_eh_day) %>%
+  summarise_if(is.numeric, mean) %>%
+  pivot_longer(cols=wbgt:hi, names_to='type', values_to = 'value') %>%
+  ggplot(aes(x = day, y = value, color = is_eh_day)) +
+  geom_line(aes(group = 1)) +
+  facet_grid(type~month, scales = 'free') + 
+  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank()) + 
+  labs(color='Time of Day')
+  
+```
+
+```{r fig.width=10, fig.height=5}
+rdut_tod %>%
+  filter(is_eh == FALSE) %>%
+  select(wbgt:hi, month:year, is_eh, tod) %>%
+  group_by( month, day, tod) %>%
+  summarise_if(is.numeric, mean) %>%
+  pivot_longer(cols=wbgt:hi, names_to='type', values_to = 'value') %>%
+  ggplot(aes(x = day, y = value, color = tod)) +
+  geom_line(aes(group = 1)) +
+  facet_grid(type~month, scales = 'free') + 
+  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank()) + 
+  labs(color='Time of Day')
+```
+
+look at lag 
+
+```{r}
+rdut %>% 
+  filter(solar > 0) %>%
+  ggplot(aes(x= solar, color = is_eh)) +
+  geom_boxplot()
+```
+
+
+```{r}
+rdut %>%
+  distinct(date) -> dates
+
+rdut %>% 
+  filter(is_eh == TRUE) %>%
+  distinct(date) -> eh_dates
+
+
+lag_dates <- dates[rep(which(dates$date %in% eh_dates$date), each =6) + -5:0,]
+
+lag_dates$lag <- rep(c('lag5', 'lag4', 'lag3', 'lag2', 'lag1', 'lag0'), times= 1305)
+
+rdut_lag <- right_join(rdut_tod, lag_dates, by='date')
+```
+
+plotting lag 0 vs lag of each one for each factor for each tod 
+
+
+```{r}
+rdut_lag %>%
+  select(date, ta, lag) %>%
+  pivot_longer(ta, names_to='type', values_to='value') 
+  pivot_wider(names_from = lag, values_from = value)
+```
+
+
+
+
+```{r fig.width=10, fig.height=10}
+rdut_lag %>%
+  group_by( month, day, tod, lag) %>%
+  summarise_if(is.numeric, mean) %>%
+  filter(!is.na(tod)) %>%
+  pivot_longer(cols=wbgt:hi, names_to='type', values_to = 'value') %>%
+  ggplot(aes(x=value, color = lag)) +
+  geom_boxplot() +
+  facet_grid(tod~type, scales='free')
+  
+```
+
+```{r}
+
+```
+
+
+
+
+
+
+
+

@@ -1,0 +1,357 @@
+---
+title: "Untitled"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message=FALSE)
+library(tidyverse)
+library(dplyr)
+require(tidymodels)
+require(workflows)
+require(tune)
+require(tibble)
+require(rsample)
+require(xgboost)
+library(caret)
+library(vip)
+```
+
+
+## Data Processing 
+
+
+```{r}
+rduw <- read_csv('rdu_warnings.csv')
+
+rduw %>% 
+  filter(month %in% c(5,6,7,8,9)) -> rduw
+
+rduw %>%
+  select(-c(station, time, lat, lon, year,month,day, round_time, name, is_heat)) -> rduw
+  
+```
+
+just get day of, lag 1, 2, 3, 4, 5 data 
+lag sum over days 
+month variable 
+
+
+```{r}
+# day of summary statistics 
+rduw %>% 
+  group_by(date) %>%
+  summarise_if(is.numeric, list(min, max, mean, var), na.rm = TRUE) %>%
+  setNames(gsub("_fn1","_min",names(.))) %>% 
+  setNames(gsub("_fn2","_max",names(.))) %>%
+  setNames(gsub("_fn3","_mean",names(.))) %>%
+  setNames(gsub("_fn4","_var",names(.))) %>%
+  select(-starts_with(c('lat', 'lon'))) -> rduw_sum
+```
+
+
+```{r}
+# get lag day 1-5 dates 
+rduw_sum %>%
+  select(date) %>%
+  mutate(lag1 = lag(date, 1),
+         lag2 = lag(date, 2),
+         lag3 = lag(date, 3),
+         lag4 = lag(date, 4),
+         lag5 = lag(date, 5))%>%
+  filter(!is.na(lag5)) -> lag_dates
+```
+
+
+```{r}
+# rbind as necessary and get avg min max var 
+get_lag_data <- function(start, stop) {
+  
+  final_df <- data.frame()
+  
+  for(i in start:stop){
+    name <- paste0('lag', i)
+    rduw %>%
+      inner_join(lag_dates[, c('date', name)], by=c('date'=name)) %>%
+      select(-date, date = date.y) -> sub_df
+    
+    final_df <- rbind(final_df, sub_df)
+  }
+  return(final_df)
+}
+```
+
+
+```{r}
+# two day agg
+df2 <- get_lag_data(1, 2)
+
+df2 %>%
+  group_by(date) %>%
+  summarise_if(is.numeric, list(min, max, mean, var), na.rm = TRUE) %>%
+  setNames(gsub("_fn1","_min",names(.))) %>% 
+  setNames(gsub("_fn2","_max",names(.))) %>%
+  setNames(gsub("_fn3","_mean",names(.))) %>%
+  setNames(gsub("_fn4","_var",names(.))) %>%
+  setNames(paste0('agg2_', names(.))) -> df2_agg
+
+```
+
+```{r}
+# three day agg
+df3 <- get_lag_data(1, 3)
+
+df3 %>%
+  group_by(date) %>%
+  summarise_if(is.numeric, list(min, max, mean, var), na.rm = TRUE) %>%
+  setNames(gsub("_fn1","_min",names(.))) %>% 
+  setNames(gsub("_fn2","_max",names(.))) %>%
+  setNames(gsub("_fn3","_mean",names(.))) %>%
+  setNames(gsub("_fn4","_var",names(.))) %>%
+  setNames(paste0('agg3_', names(.))) -> df3_agg
+```
+
+```{r}
+# five day agg
+df5 <- get_lag_data(1, 5)
+
+df5 %>%
+  group_by(date) %>%
+  summarise_if(is.numeric, list(min, max, mean, var), na.rm = TRUE) %>%
+  setNames(gsub("_fn1","_min",names(.))) %>% 
+  setNames(gsub("_fn2","_max",names(.))) %>%
+  setNames(gsub("_fn3","_mean",names(.))) %>%
+  setNames(gsub("_fn4","_var",names(.))) %>%
+  setNames(paste0('agg5_', names(.))) -> df5_agg
+```
+
+
+```{r}
+# join all lag data together 
+cbind(df2_agg, df3_agg, df5_agg) %>%
+  select(-c(agg2_date, agg3_date), date=agg5_date) %>%
+  inner_join(rduw_sum, by='date') -> rduw_agg_fin
+
+# cbind on lag 1 agg 
+# lag day 1 summary statistics 
+rduw_sum %>%
+  mutate_if(is.numeric, lag, 1) %>%
+  setNames(paste0('agg1_', names(.)))-> rduw_sum_lag1
+
+rduw_agg_fin <- inner_join(rduw_agg_fin, rduw_sum_lag1, by=c('date' ='agg1_date'))
+
+# add month and is_heat_day 
+rduw %>%
+  filter(date %in% unique(rduw_agg_fin$date)) %>%
+  group_by(date) %>%
+  distinct(is_heat_day) %>%
+  ungroup() %>%
+  select(-date) ->rduw_heat_day
+
+
+cbind(rduw_agg_fin, rduw_heat_day) %>%
+  mutate(month = factor(lubridate::month(date))) -> dff
+
+
+# same day, lag 1, 2 day avg, 3 day avg, 5 day avg before (month, is_heat_day )
+```
+
+
+```{r}
+# make month indicator variable 
+dff %>% 
+  mutate(month5 = ifelse(month == 5, 1, 0),
+         month6 = ifelse(month == 6, 1, 0),
+         month7 = ifelse(month == 7, 1, 0),
+         month8 = ifelse(month == 8, 1, 0),
+         month9 = ifelse(month == 9, 1, 0)) %>%
+  select(-month) -> dff
+
+# dff$is_heat_day <- factor(dff$is_heat_day)
+```
+
+
+```{r}
+dff %>% 
+  select(-date) %>%
+  mutate(is_heat_day = ifelse(is_heat_day == TRUE, 1, 0)) -> dff_2
+
+X <- dff_2 %>% select(-is_heat_day)
+y <-  dff_2$is_heat_day
+
+# normalize data for X 
+X %>%
+  select(where(~ n_distinct(.) > 1)) %>%
+  mutate_all(scale) -> X_norm
+```
+
+
+## PCA
+```{r}
+X %>% select(where(~ n_distinct(.) > 1)) -> X2
+
+pca_res <- stats::prcomp(X2, center = TRUE,scale. = TRUE, rank. = 5)
+
+data.frame(pca_res$rotation) %>%
+  filter(PC1 >= 0.1) -> pca_res_filtered
+
+cols_we_want <- row.names(pca_res_filtered)
+
+X %>%
+  select(all_of(cols_we_want)) -> X_filtered
+```
+
+
+## Logistic Regression
+```{r}
+# get_glmnet_coefs <- function(cvfit, s="lambda.min") {
+#     ind <- which(coef(cvfit, s=s) != 0)
+#     df <- data.frame(
+#         feature=rownames(coef(cvfit, s=s))[ind],
+#         coeficient=coef(cvfit, s=s)[ind]
+#     )
+#   return(df)
+# }
+```
+
+```{r}
+# cv.glmnet.fit <- cv.glmnet(data.matrix(X_norm), y, alpha=1)
+# 
+# coefs_df <- get_glmnet_coefs(cv.glmnet.fit)
+# 
+# coefs_df %>%
+#   filter(coeficient >= 0.0001) %>%
+#   filter(feature != '(Intercept)')-> coefs_filtered
+# 
+# # filter predictors on logistic regression
+# X %>%
+#   select(coefs_filtered$feature) -> X_filtered
+```
+
+
+## Split data for CV 
+```{r}
+# split data
+set.seed(513)
+
+test <- bind_cols(X_filtered, is_heat_day = factor(dff_2$is_heat_day))
+
+train.index <- createDataPartition(test$is_heat_day, p = .8, list = FALSE)
+train_df <- test[train.index,]
+test_df <- test[-train.index,]
+
+folds <- vfold_cv(train_df, 5)
+```
+
+```{r}
+# tune model 
+mod <- boost_tree(mtry = tune(), min_n = tune(), trees = tune(), tree_depth= tune()) %>%
+      set_mode("classification") %>%
+      set_engine("xgboost")
+
+workflow <- workflow() %>%
+  add_model(mod) %>%
+  add_formula(is_heat_day ~.)
+
+
+boost_grid <- expand.grid(tree_depth = 1:10, trees = c(25, 50, 100, 150, 250), min_n = c(2:10), mtry = c(5, 10, 15, 20))
+
+res <- workflow %>%
+  tune_grid(grid = boost_grid,
+            control = control_grid(save_pred = TRUE),
+            resamples = folds)
+
+res %>% select_best("accuracy") -> best_params
+
+workflow %>%
+  finalize_workflow(best_params) -> final_wf
+```
+
+```{r}
+# save best params 
+saveRDS(best_params, file = "model_v2_best_params.rds")
+```
+
+
+```{r}
+# need some type of tuning for how much of the thresholded pca to add in 
+```
+
+
+```{r}
+best_res <- fit(final_wf, data = train_df)
+
+# predict on test data
+test_preds <- predict(best_res, test_df)
+
+# test prediction accuracy 
+t <- cbind(truth = test_df$is_heat_day, test_preds)
+tp <- sum((t$truth == t$.pred_class) & t$truth == 1)
+fp <- nrow(t[t$truth == 0 & t$.pred_class == 1,])
+fn <- nrow(t[t$truth == 1 & t$.pred_class == 0,])
+
+
+accuracy <-sum(t$truth == t$.pred_class) / nrow(test_df)
+precision <- tp / (tp + fp)
+recall <- tp / (tp + fn)
+f1 <- (2 * precision * recall) / (precision + recall)
+data.frame(accuracy, precision, recall, f1) %>%
+  mutate_all(~round(., 3))
+
+
+best_res %>% 
+    extract_fit_parsnip() %>%
+    vip() 
+
+```
+
+```{r}
+res_log_filt
+```
+
+```{r}
+t[t$truth == 1 & t$.pred_class == 0,]
+```
+
+```{r}
+test_df[c(79, 83, 111, 174),]
+```
+
+
+
+```{r}
+# predict on test data
+preds <- predict(best_res, train_df)
+
+# test prediction accuracy 
+t <- cbind(truth = train_df$is_heat_day, preds)
+tp <- sum((t$truth == t$.pred_class) & t$truth == 1)
+fp <- nrow(t[t$truth == 0 & t$.pred_class == 1,])
+fn <- nrow(t[t$truth == 1 & t$.pred_class == 0,])
+
+
+accuracy <-sum(t$truth == t$.pred_class) / nrow(train_df)
+precision <- tp / (tp + fp)
+recall <- tp / (tp + fn)
+f1 <- (2 * precision * recall) / (precision + recall)
+data.frame(accuracy, precision, recall, f1) %>%
+  mutate_all(~round(., 3))
+
+
+best_res %>% 
+    extract_fit_parsnip() %>%
+    vip() 
+```
+
+
+
+
+
+
+
+
+
+
+
+
+

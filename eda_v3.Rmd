@@ -1,0 +1,184 @@
+---
+title: "eda_v3"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+
+library(tidyverse)
+library(ggplot2)
+```
+
+take data processed data 
+
+process heat warning data - get dates
+```{r}
+warn <- readxl::read_xlsx('vtec_93.6530W_41.5300N_19860101_20221122 (1).xlsx')
+
+warn %>%
+  filter(ph_name %in% c('Excessive Heat', 'Heat' )) %>%
+  mutate(date_issued = as.POSIXct(str_sub(issued, 1, 10)),
+         date_expired = as.POSIXct(str_sub(expired, 1, 10)),
+         diff = as.integer(date_expired - date_issued)) -> warn
+
+warn %>%
+  filter(diff < 0 ) %>%
+  rename(date_expired = date_issued, date_issued = date_expired) %>%
+  mutate(diff = as.integer(date_expired - date_issued)) -> warn_neg
+
+warn %>% 
+  filter(diff >= 0) %>%
+  bind_rows(warn_neg) -> warn
+
+dates <- c()
+for (i in 1:nrow(warn)){
+  n <- seq(warn$date_issued[i], warn$date_expired[i], by='days')
+  dates <- c(dates, n)
+}
+
+warning_dates <- as.POSIXct(dates, origin = "1970-01-01")
+
+# make dataframe and add indicator column
+data.frame(date = warning_dates) %>%
+  distinct() %>%
+  mutate(is_heat = TRUE) -> warn_fin
+```
+
+
+process dates 
+```{r}
+df <- read.table('era5land_1980_2022.txt', sep=',', header = TRUE)
+
+# filter for years and months and lat / lon
+df %>%
+  mutate(year = as.numeric(str_sub(datetime, 1, 4))) %>%
+  # subset for 2005 onward 
+  filter(year >= 2005) %>%
+  mutate(month = as.numeric(str_sub(datetime, 6,7))) %>%
+  # subset for summer months
+  filter(month %in% c(5,6,7,8,9)) %>% 
+  # filter lat / long - 79, 78.8 ; 35.9, 36.1
+  filter(lat %in% c(35.9, 36, 36.1), lon %in% c(-78.8, -78.9, -79)) %>% 
+  # make hour variable
+  mutate(datetime = lubridate::ymd_hms(datetime),
+         date = lubridate::ymd(str_sub(datetime, 1, 10)),
+         time = hms::as_hms(datetime))-> df
+
+# make date and select columns
+df %>%
+  select(date, time, air_temp = Tair, pressure = pres, solar, dewpoint, humidity = relhum, wind_10m:hi, year:month) -> df_fin
+```
+
+```{r}
+# merge df and warning dates 
+left_join(df_fin, warn_fin, by='date') %>%
+  mutate(is_heat = ifelse(is.na(is_heat), FALSE, is_heat)) -> dfw
+```
+
+
+```{r}
+# histogram by each variable overall 
+dfw %>%
+  select(air_temp:hi, month)%>%
+  mutate(month = factor(month)) %>%
+  pivot_longer(cols=air_temp:hi, names_to='type', values_to = 'value') %>%
+  ggplot(aes(x = value, color=month)) +
+  geom_density() +
+  facet_wrap(~type, nrow=4, scales='free')+ 
+  theme_bw()
+```
+
+```{r}
+dfw %>%
+  select(air_temp:hi, is_heat) %>%
+  pivot_longer(cols=air_temp:hi, names_to='type', values_to = 'value') %>%
+  ggplot(aes(x = value, color = is_heat)) +
+  geom_density() +
+  facet_wrap(~type, nrow=4, scales='free') +
+  theme_bw() + 
+  labs(x='', y='', color = 'Heat Warning')
+```
+
+```{r}
+# correlation matrix 
+dfw %>%
+  select(air_temp:hi) %>%
+  cor() %>%
+  corrplot::corrplot(., method='number')
+```
+
+
+get tod data 
+```{r}
+dfw %>% 
+  mutate(hour = as.factor(str_sub(time, 1,2))) %>%
+  mutate(tod = case_when(
+    hour %in% c('22', '23', '00', '01', '02', '03', '04', '05') ~ 'Evening',
+    hour %in% c('06', '07', '08', '09', '10', '11') ~ 'Morning',
+    hour %in% c('12', '13','14','15','16','17') ~ 'Afternoon',
+    hour %in% c('18','19','20','21') ~ 'Early Evening'
+  )) -> df_tod
+```
+
+```{r}
+df_tod %>%
+  select(air_temp:hi, tod) %>%
+  pivot_longer(cols=air_temp:hi, names_to='type', values_to = 'value') %>%
+  ggplot(aes(x = value, color = tod)) +
+  geom_boxplot() +
+  facet_wrap(~type, nrow=4, scales='free') +
+  theme_bw() + 
+  labs(x='', y='', color = 'Heat Warning')
+```
+
+```{r}
+# air temp, humidity, hi, solar, wbgt
+
+df_tod %>%
+  ggplot(aes(x =  hi, color = is_heat)) +
+  geom_boxplot() + 
+  facet_wrap(~tod, scales='free') + 
+  theme_bw()
+
+df_tod %>%
+  ggplot(aes(x =  air_temp, color = is_heat)) +
+  geom_boxplot() + 
+  facet_wrap(~tod, scales='free') + 
+  theme_bw()
+
+df_tod %>%
+  ggplot(aes(x =  humidity, color = is_heat)) +
+  geom_boxplot() + 
+  facet_wrap(~tod, scales='free') + 
+  theme_bw()
+
+df_tod %>%
+  ggplot(aes(x =  solar, color = is_heat)) +
+  geom_boxplot() + 
+  facet_wrap(~tod, scales='free') + 
+  theme_bw()
+
+df_tod %>%
+  ggplot(aes(x =wbgt, color = is_heat)) +
+  geom_boxplot() + 
+  facet_wrap(~tod, scales='free') + 
+  theme_bw()
+```
+
+get by day data 
+get lag data 
+
+
+get min, max, mean, var 
+
+
+make overall distributions 
+make variable relation to heat warning 
+make diff in years, months, tod 
+
+
+```{r}
+
+```
+

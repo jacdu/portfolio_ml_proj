@@ -4,7 +4,7 @@ library(stringr)
 library(magrittr)
 
 # read in weather data 
-df <- read.table('era5land_1980_2022.txt', sep=',', header = TRUE)
+df <- read.table('data/era5land_1980_2022.txt', sep=',', header = TRUE)
 
 # filter for years and months and lat / lon
 df |>
@@ -91,7 +91,7 @@ df_lag5 <- process_lag_data(df5) %>%
 #                               GET WARNING DATA 
 # ----------------------------------------------------------------------------#
 
-warn <- readxl::read_xlsx('vtec_93.6530W_41.5300N_19860101_20221122 (1).xlsx')
+warn <- readxl::read_xlsx('data/vtec_93.6530W_41.5300N_19860101_20221122 (1).xlsx')
 
 warn |>
   filter(ph_name %in% c('Excessive Heat', 'Heat' )) |>
